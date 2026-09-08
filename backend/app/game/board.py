@@ -42,12 +42,18 @@ implementation eventually fills in the bodies here.
 
 Scope of this module
 ---------------------
-This module defines only the static data shapes (`HexTile`, `Port`,
-`Board`, ...) plus the frozen geometry function *signatures* other
-modules (`board_generator.py`, `rules_engine.py`, the frontend) are
-written against. It intentionally contains **no geometry implementation**
--- every function below raises ``NotImplementedError`` and is Wave 1
-work (see ``AGENT_BUILD_PROMPTS.md``, "Board & Board Generator").
+This module defines the static data shapes (`HexTile`, `Port`, `Board`,
+...) plus the geometry functions other modules (`board_generator.py`,
+`rules_engine.py`, the frontend) are written against. The function
+*signatures* were frozen in Wave 0; their bodies (below) are the Wave 1
+"Board & Board Generator" implementation (see ``AGENT_BUILD_PROMPTS.md``).
+`get_adjacent_vertices`/`get_adjacent_edges` are pure, board-agnostic
+hex-tiling geometry (they always return the full theoretical
+corners/edges of a hex, since a bare `HexCoord` carries no information
+about which other hexes are actually tiles on a given `Board`); trimming
+a vertex down to the 2-hex boundary form described below happens in
+`board_generator.py`, which has that board-wide context. See each
+function's own docstring for the exact contract it implements.
 
 Note on JSON wire safety
 -------------------------
@@ -203,40 +209,140 @@ class Board(BaseModel):
     robber_hex: HexCoord
 
 
+#: The six axial-coordinate unit direction vectors, in a consistent
+#: cyclic (winding) order -- i.e. direction ``i`` and direction
+#: ``(i + 1) % 6`` are themselves always mutually-adjacent hex
+#: coordinates. That cyclic-adjacency property is exactly what makes
+#: ``{hex, hex + DIRECTIONS[i], hex + DIRECTIONS[(i + 1) % 6]}`` a valid
+#: mutually-adjacent 3-hex vertex for every ``i`` -- see
+#: ``get_adjacent_vertices`` below. Order/orientation follows the axial
+#: layout described at redblobgames.com/grids/hexagons; any internally
+#: consistent cyclic order works equally well since nothing outside this
+#: module depends on a particular winding direction.
+_DIRECTIONS: tuple[tuple[int, int], ...] = (
+    (1, 0),
+    (1, -1),
+    (0, -1),
+    (-1, 0),
+    (-1, 1),
+    (0, 1),
+)
+
+
+def hex_neighbors(hex: HexCoord) -> list[HexCoord]:
+    """Return the (always 6) axial coordinates adjacent to ``hex``.
+
+    Unlike `get_adjacent_vertices`/`get_adjacent_edges`, this is not part
+    of the Wave 0 frozen contract -- it's a small additional pure-geometry
+    helper (no board/tile awareness) that `board_generator.py` and this
+    module's own vertex/edge derivation both build on, so the single
+    direction-vector table above has one implementation.
+    """
+    return [HexCoord(hex.q + dq, hex.r + dr) for dq, dr in _DIRECTIONS]
+
+
+def _common_hex_neighbors(a: HexCoord, b: HexCoord) -> list[HexCoord]:
+    """The hexes that are neighbors of both ``a`` and ``b``.
+
+    For any two mutually-adjacent hexes in an (infinite) hex tiling this
+    is always exactly the two hexes that, together with ``a`` and ``b``,
+    form the two vertices at either end of the ``a``-``b`` edge -- e.g.
+    `edge_endpoints` is built directly on this.
+    """
+    neighbors_of_a = set(hex_neighbors(a))
+    neighbors_of_b = set(hex_neighbors(b))
+    return sorted(neighbors_of_a & neighbors_of_b)
+
+
+def _vertex_id(hexes: tuple[HexCoord, ...]) -> VertexId:
+    return tuple(sorted(set(hexes)))
+
+
 def get_adjacent_vertices(hex: HexCoord) -> list[VertexId]:
     """Return the ids of the (up to 6) vertices at the corners of ``hex``.
 
-    Implementation is Wave 1 work (see module docstring). Once
-    implemented, callers can rely on: the returned list has one entry per
-    corner of the hexagon at ``hex`` that is a valid vertex on the board
-    the caller is working with, and every returned id contains ``hex``
-    itself as one of its (2 or 3) component `HexCoord` values.
+    This is pure hex-tiling geometry with no notion of which hexes are
+    actually present as tiles on any particular `Board` -- it always
+    returns the 6 full, 3-hex theoretical corners of ``hex`` in an
+    (infinite) tiling, one per pair of cyclically-consecutive neighbors
+    (see `_DIRECTIONS`). Trimming a corner down to the 2-hex boundary
+    form described in the module docstring is a board-aware step (a
+    corner's third hex isn't actually a tile on *this* board) that
+    belongs to whatever is assembling a concrete `Board` --
+    `board_generator.py` does this when it builds a board's real vertex
+    set, by intersecting each returned id's hexes with the board's actual
+    `Board.hexes` keys.
+
+    Every returned id contains ``hex`` itself as one of its 3 component
+    `HexCoord` values, per the contract.
     """
-    raise NotImplementedError
+    neighbors = hex_neighbors(hex)
+    return [
+        _vertex_id((hex, neighbors[i], neighbors[(i + 1) % 6]))
+        for i in range(6)
+    ]
 
 
 def get_adjacent_edges(hex: HexCoord) -> list[EdgeId]:
     """Return the ids of the (up to 6) edges bordering ``hex``.
 
-    Implementation is Wave 1 work. Once implemented, every returned id is
-    a 2-tuple containing ``hex`` as one of its two component
-    `HexCoord` values.
+    Every returned id is a 2-tuple containing ``hex`` as one of its two
+    component `HexCoord` values. Per the module docstring, edges are
+    never trimmed for board presence -- the hex coordinate slot on the
+    far side of a boundary edge exists in coordinate space regardless of
+    whether a tile has been placed there (this is what lets a road be
+    built along the outer edge of the play area).
     """
-    raise NotImplementedError
+    return [tuple(sorted((hex, neighbor))) for neighbor in hex_neighbors(hex)]
 
 
 def vertex_neighbors(v: VertexId) -> list[VertexId]:
     """Return the vertex ids directly connected to ``v`` by a single edge.
 
     A vertex has degree 3 in the interior of the board (fewer along the
-    board boundary). Implementation is Wave 1 work.
+    board boundary). For a 3-hex ``v`` this is unambiguous: each of the
+    3 pairs of hexes within ``v`` borders exactly one other vertex
+    (``edge_endpoints`` of that pair's edge, discarding ``v`` itself).
+
+    For a 2-hex boundary ``v`` (one theoretical third hex missing from
+    the board), which of ``v``'s two hexes' *other* common neighbor is
+    the "real" missing hex isn't recoverable from ``v`` alone -- this
+    function has no board to check presence against (see
+    `get_adjacent_vertices`). It resolves this safely by considering
+    *both* theoretical completions of ``v`` and returning the union of
+    their neighbors: every genuinely-on-board neighbor of ``v`` is
+    guaranteed to be included, and any extra candidates this produces
+    reference hex coordinates that are absent from the board, so they can
+    never collide with a real vertex id a caller looks up (e.g. in
+    `Board.buildings`).
     """
-    raise NotImplementedError
+    hexes = list(v)
+    if len(hexes) == 3:
+        completions = [hexes]
+    else:
+        a, b = hexes
+        completions = [[a, b, c] for c in _common_hex_neighbors(a, b)]
+
+    results: set[VertexId] = set()
+    for triple in completions:
+        for i in range(3):
+            pair = [triple[j] for j in range(3) if j != i]
+            excluded = triple[i]
+            for candidate in _common_hex_neighbors(pair[0], pair[1]):
+                if candidate != excluded:
+                    results.add(_vertex_id((pair[0], pair[1], candidate)))
+    results.discard(v)
+    return sorted(results)
 
 
 def edge_endpoints(e: EdgeId) -> tuple[VertexId, VertexId]:
     """Return the two vertex ids that ``e`` connects.
 
-    Implementation is Wave 1 work.
+    Like `get_adjacent_vertices`, this returns the full, untrimmed 3-hex
+    theoretical vertex ids -- the two hexes adjacent to *both* ends of
+    ``e`` (always exactly two, for any pair of mutually-adjacent hexes in
+    a hex tiling).
     """
-    raise NotImplementedError
+    a, b = e
+    ends = sorted(_vertex_id((a, b, c)) for c in _common_hex_neighbors(a, b))
+    return (ends[0], ends[1])
