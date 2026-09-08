@@ -1,21 +1,23 @@
-# Dev compose file: bind-mounts + hot reload, run on Windows via Docker
-# Desktop (see ARCHITECTURE.md's "Deployment" section).
+# Dev compose file: bind mounts + hot reload, run on Windows via
+# Docker Desktop (see ARCHITECTURE.md's "Deployment" section).
 #
-# STUB: minimal skeleton so the repo structure and build contexts are in
-# place; a later Docker/deploy agent fleshes this out for real. Usage
-# once real Dockerfiles + app code exist:
-#   docker-compose -f docker-compose.dev.yml up
+# Usage:
+#   cp .env.example .env   # then edit as needed
+#   docker compose -f docker-compose.dev.yml up --build
 
 services:
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    volumes:
-      - ./backend/app:/app/app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     env_file:
       - .env
+    volumes:
+      # Whole backend/ (not just app/) so pyproject.toml and test
+      # edits are reflected too; --reload watches for .py changes
+      # under the working dir (/app).
+      - ./backend:/app
     ports:
       - "8000:8000"
     networks:
@@ -25,10 +27,26 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    command: npm run dev -- --host 0.0.0.0
+      # Stop at the "deps" stage (node_modules installed, nothing
+      # built) - the Vite dev server serves source directly, so the
+      # "build"/"runtime" stages in frontend/Dockerfile aren't needed
+      # here.
+      target: deps
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    environment:
+      # The Vite dev server (5173) and the backend (8000) are
+      # different origins in dev (no nginx proxy in front of Vite),
+      # so point straight at the backend's published localhost port.
+      VITE_API_URL: http://localhost:8000/api
+      VITE_WS_URL: ws://localhost:8000/ws
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/index.html:/app/index.html
+      - ./frontend:/app
+      # Anonymous volume over node_modules: keeps the image's
+      # Linux-built node_modules (from `npm ci` in the "deps" stage)
+      # instead of letting the bind mount above shadow it with
+      # node_modules from the Windows host - native deps (esbuild
+      # etc.) are platform-specific and won't run cross-platform.
+      - /app/node_modules
     ports:
       - "5173:5173"
     networks:
