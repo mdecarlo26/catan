@@ -1,0 +1,29 @@
+.tray {
+  display: flex;
+  gap: 0.4rem;
+  font-family: system-ui, sans-serif;
+}
+
+.slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  background: #24201a;
+  border: 1px solid #4a3f2c;
+  border-radius: 6px;
+  color: #f3ead9;
+}
+
+.icon {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.count {
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}

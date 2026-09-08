@@ -1,0 +1,84 @@
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-family: system-ui, sans-serif;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  background: #1e2a22;
+  border: 1px solid #35492f;
+  border-radius: 6px;
+  color: #eef3ea;
+}
+
+.seat {
+  font-variant-numeric: tabular-nums;
+  color: #a8b6a1;
+  font-size: 0.8rem;
+  width: 1.75rem;
+}
+
+.nickname {
+  flex: 1;
+  font-weight: 600;
+}
+
+.youTag {
+  font-weight: 400;
+  color: #a8b6a1;
+}
+
+.hostBadge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: #c99a3a;
+  color: #221a08;
+  border-radius: 3px;
+  padding: 0.15rem 0.35rem;
+}
+
+.connected,
+.disconnected {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+}
+
+.connected {
+  color: #7fd88f;
+}
+
+.disconnected {
+  color: #d8817f;
+}
+
+.statusDot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.kickButton {
+  background: #5c2323;
+  color: #f3e0e0;
+  border: 1px solid #7a3030;
+  border-radius: 4px;
+  padding: 0.25rem 0.55rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.kickButton:hover {
+  background: #7a3030;
+}

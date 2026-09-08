@@ -1,0 +1,33 @@
+.counter {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: system-ui, sans-serif;
+  color: #f3ead9;
+}
+
+.score {
+  font-size: 1.4rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.target {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #a89f8a;
+}
+
+.badges {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.badge {
+  font-size: 0.7rem;
+  background: #4a3f2c;
+  border: 1px solid #6b5a3c;
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+}
