@@ -1,11 +1,13 @@
 # Production compose file for the Linux host.
 #
-# STUB: this is a minimal skeleton so the repo structure and build
-# contexts are in place; a later Docker/deploy agent fleshes this out
-# for real (reverse proxy / TLS for the WS upgrade, health checks,
-# graceful shutdown, prod CORS, etc.) per ARCHITECTURE.md's
-# "Phase 4 - Docker deploy" section. backend/Dockerfile and
-# frontend/Dockerfile referenced below are written by that agent.
+# Brings up the backend (FastAPI/Uvicorn) and the frontend (nginx
+# serving the Vite build, reverse-proxying /api and /ws to the backend
+# by Compose service name - see frontend/nginx.conf) per
+# ARCHITECTURE.md's "Phase 4 - Docker deploy" section.
+#
+# Usage:
+#   cp .env.example .env   # then edit as needed
+#   docker compose up -d --build
 
 services:
   backend:
@@ -16,8 +18,11 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    ports:
-      - "8000:8000"
+    # Not published to the host: only the frontend's nginx talks to
+    # this service, over the internal "catan" network by service name
+    # (see frontend/nginx.conf's proxy_pass targets).
+    expose:
+      - "8000"
     networks:
       - catan
 
@@ -25,6 +30,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+        VITE_WS_URL: ${VITE_WS_URL:-/ws}
     image: catan-frontend:latest
     restart: unless-stopped
     depends_on:
