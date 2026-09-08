@@ -1,0 +1,39 @@
+# Production compose file for the Linux host.
+#
+# STUB: this is a minimal skeleton so the repo structure and build
+# contexts are in place; a later Docker/deploy agent fleshes this out
+# for real (reverse proxy / TLS for the WS upgrade, health checks,
+# graceful shutdown, prod CORS, etc.) per ARCHITECTURE.md's
+# "Phase 4 - Docker deploy" section. backend/Dockerfile and
+# frontend/Dockerfile referenced below are written by that agent.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: catan-backend:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    networks:
+      - catan
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: catan-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - catan
+
+networks:
+  catan:
+    driver: bridge

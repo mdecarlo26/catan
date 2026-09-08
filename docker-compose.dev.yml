@@ -1,0 +1,39 @@
+# Dev compose file: bind-mounts + hot reload, run on Windows via Docker
+# Desktop (see ARCHITECTURE.md's "Deployment" section).
+#
+# STUB: minimal skeleton so the repo structure and build contexts are in
+# place; a later Docker/deploy agent fleshes this out for real. Usage
+# once real Dockerfiles + app code exist:
+#   docker-compose -f docker-compose.dev.yml up
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend/app:/app/app
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    networks:
+      - catan
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    command: npm run dev -- --host 0.0.0.0
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+    ports:
+      - "5173:5173"
+    networks:
+      - catan
+
+networks:
+  catan:
+    driver: bridge
