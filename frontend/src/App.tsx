@@ -1,15 +1,23 @@
+import { Outlet } from "react-router-dom";
+import { useGameStore } from "./state/gameStore";
+
 /**
- * Minimal placeholder root component so `npm run build` succeeds on the
- * empty repo skeleton. Real routing (Home, CreateRoom, Lobby, Game,
- * GameOver) is implemented under src/app/ by a later agent -- see
- * ARCHITECTURE.md's "Repo Structure" and AGENT_BUILD_PROMPTS.md's
- * "Frontend App Shell & WS Client" task.
+ * Root layout mounted by the router (see app/router.tsx). Keeps a
+ * persistent connection-status indicator across routes; each route
+ * under app/ renders into <Outlet />.
  */
 export default function App() {
+  const connectionStatus = useGameStore((state) => state.connectionStatus);
+
   return (
     <div>
-      <h1>Catan</h1>
-      <p>Scaffold placeholder -- routes not wired up yet.</p>
+      <header>
+        <strong>Catan</strong>
+        <span> -- {connectionStatus}</span>
+      </header>
+      <main>
+        <Outlet />
+      </main>
     </div>
   );
 }
