@@ -1,0 +1,22 @@
+.startButton {
+  font-family: system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 0.95rem;
+  padding: 0.55rem 1.4rem;
+  background: #3f7a3f;
+  color: #eef3ea;
+  border: 1px solid #5aa15a;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.startButton:hover:not(:disabled) {
+  background: #4c944c;
+}
+
+.startButton:disabled {
+  background: #2c3b28;
+  border-color: #3a4d35;
+  color: #7d8a76;
+  cursor: not-allowed;
+}

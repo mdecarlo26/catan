@@ -1,0 +1,205 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  background: #1c1f2a;
+  border: 1px solid #333a52;
+  border-radius: 8px;
+  color: #e7e9f3;
+  font-family: system-ui, sans-serif;
+  min-width: 18rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.tab,
+.tabActive {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 1px solid #3d4460;
+  background: #14161c;
+  color: #b7bcd6;
+}
+
+.tabActive {
+  background: #33507a;
+  color: #ffffff;
+  border-color: #4a6ea3;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.pickerTitle {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #b7bcd6;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.pickerRow {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.pickerSlot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  background: #14161c;
+  border: 1px solid #2c2f3b;
+  border-radius: 6px;
+  padding: 0.3rem 0.4rem;
+}
+
+.pickerIcon {
+  font-size: 1rem;
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.stepper button {
+  width: 1.3rem;
+  height: 1.3rem;
+  border-radius: 4px;
+  border: 1px solid #3d4460;
+  background: #232637;
+  color: #e7e9f3;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0;
+}
+
+.stepper button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.stepperCount {
+  min-width: 1rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+}
+
+.hint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: #9aa1c0;
+}
+
+.hintSmall {
+  margin: 0;
+  font-size: 0.68rem;
+  color: #7a8095;
+}
+
+.submitButton {
+  background: #3f7a3f;
+  color: #eef3ea;
+  border: 1px solid #5aa15a;
+  border-radius: 5px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.submitButton:disabled {
+  background: #2c3b28;
+  border-color: #3a4d35;
+  color: #7d8a76;
+  cursor: not-allowed;
+}
+
+.playerTradeSection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.targetList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.targetOption {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+}
+
+.pendingSection {
+  border-top: 1px solid #2c2f3b;
+  padding-top: 0.5rem;
+}
+
+.pendingList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.pendingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  background: #14161c;
+  border: 1px solid #2c2f3b;
+  border-radius: 5px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.78rem;
+}
+
+.pendingActions {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.acceptButton,
+.declineButton {
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.acceptButton {
+  background: #3f7a3f;
+  color: #eef3ea;
+  border: 1px solid #5aa15a;
+}
+
+.declineButton {
+  background: #5c2323;
+  color: #f3e0e0;
+  border: 1px solid #7a3030;
+}

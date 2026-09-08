@@ -1,0 +1,47 @@
+.log {
+  overflow-y: auto;
+  background: #14161c;
+  border: 1px solid #2c2f3b;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  font-family: system-ui, sans-serif;
+  min-width: 16rem;
+}
+
+.empty {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #7a8095;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.entry {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: #d3d7e6;
+  padding: 0.15rem 0;
+  border-bottom: 1px solid #21232e;
+}
+
+.entry:last-child {
+  border-bottom: none;
+}
+
+.time {
+  color: #7a8095;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.message {
+  flex: 1;
+}
