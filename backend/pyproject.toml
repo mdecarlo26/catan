@@ -24,4 +24,4 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["app/tests"]
+testpaths = ["app/tests", "app/game/tests"]
