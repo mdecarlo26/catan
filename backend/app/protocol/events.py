@@ -52,6 +52,7 @@ from app.game.state import PendingAction, Phase
 
 
 class EventType(str, Enum):
+    SESSION_ESTABLISHED = "SESSION_ESTABLISHED"
     ROOM_STATE = "ROOM_STATE"
     PLAYER_JOINED = "PLAYER_JOINED"
     PLAYER_LEFT = "PLAYER_LEFT"
@@ -193,6 +194,25 @@ class ClientGameStateView(BaseModel):
 # ---------------------------------------------------------------------
 # Payload models
 # ---------------------------------------------------------------------
+
+
+class SessionEstablishedPayload(BaseModel):
+    """Sent to exactly one socket, immediately after a successful
+    `JOIN_ROOM` handshake: the freshly minted `player_id` and reconnect
+    `token` that connection must persist client-side (per
+    `frontend/src/api/session.ts`'s `StoredSession`) to reconnect via
+    `/ws/{room_code}?token=...` later. Not part of the original
+    Wave-0/Wave-1 frozen contract -- added during backend/WS integration
+    to close a real gap: nothing else in this protocol ever hands a
+    freshly-joined (non-host) player their own `player_id`/`token`. See
+    `app.api.websocket`'s module docstring for the full rationale,
+    including why this reuses `Room.last_seq` rather than consuming a
+    new `seq`.
+    """
+
+    player_id: PlayerId
+    token: str
+    room_code: str
 
 
 class RoomStatePayload(BaseModel):
@@ -360,6 +380,11 @@ class _EventEnvelopeBase(BaseModel):
     ts: float
 
 
+class SessionEstablishedEvent(_EventEnvelopeBase):
+    type: Literal[EventType.SESSION_ESTABLISHED] = EventType.SESSION_ESTABLISHED
+    payload: SessionEstablishedPayload
+
+
 class RoomStateEvent(_EventEnvelopeBase):
     type: Literal[EventType.ROOM_STATE] = EventType.ROOM_STATE
     payload: RoomStatePayload
@@ -477,7 +502,8 @@ class ErrorEvent(_EventEnvelopeBase):
 
 #: Discriminated union of every possible Server -> Client message.
 ServerEvent: TypeAlias = Annotated[
-    RoomStateEvent
+    SessionEstablishedEvent
+    | RoomStateEvent
     | PlayerJoinedEvent
     | PlayerLeftEvent
     | PlayerKickedEvent

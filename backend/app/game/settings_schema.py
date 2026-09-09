@@ -66,6 +66,20 @@ class GameSettings(BaseModel):
     #: player when a 7 is rolled (standard Catan default: 7).
     discard_limit: int = Field(default=7, ge=1)
 
+    #: Friendly-robber house rule: moving the robber still blocks a
+    #: hex's production, but never steals a card from the players
+    #: settled there. Selects `app.game.rules.robber_strategies
+    #: .friendly_robber_steal_candidates` instead of the normal
+    #: candidate-gathering in `rules_engine._apply_move_robber`.
+    friendly_robber: bool = False
+
+    #: Seconds a turn may sit idle (no action from the current player)
+    #: before the stalled-turn timer force-ends it -- see
+    #: `app.game.rules.turn_timer.should_force_end_turn`, wired up by
+    #: `app.api.websocket`'s per-room background task. `0` disables the
+    #: timer.
+    turn_timer_seconds: int = Field(default=120, ge=0)
+
 
 class SettingFieldType(str, Enum):
     """The primitive type a `SettingFieldMeta` entry describes, used by
@@ -157,6 +171,26 @@ SETTINGS_REGISTRY: list[SettingFieldMeta] = [
             "when a 7 is rolled."
         ),
         min_value=1,
+        max_value=None,
+    ),
+    SettingFieldMeta(
+        key="friendly_robber",
+        type=SettingFieldType.BOOL,
+        default=False,
+        description=(
+            "Friendly robber: moving the robber still blocks a hex's "
+            "production, but never steals a card."
+        ),
+    ),
+    SettingFieldMeta(
+        key="turn_timer_seconds",
+        type=SettingFieldType.INT,
+        default=120,
+        description=(
+            "Seconds a turn may sit idle before it's automatically "
+            "ended. 0 disables the timer."
+        ),
+        min_value=0,
         max_value=None,
     ),
 ]

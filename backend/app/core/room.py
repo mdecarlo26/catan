@@ -250,6 +250,26 @@ class Room:
         self._next_seq_counter += 1
         return seq
 
+    @property
+    def last_seq(self) -> int:
+        """The most recently issued `seq` value (0 if `next_seq()` has
+        never been called for this room).
+
+        `app.api.websocket` uses this (instead of `next_seq()`) for
+        connection-private/meta messages -- `ERROR`, a reconnecting
+        player's catch-up `ROOM_STATE`/`STATE_SNAPSHOT`, a freshly
+        joining player's session-token message -- that are delivered to
+        exactly one socket rather than every currently-connected seat.
+        Reusing the last-issued number (instead of consuming a new one)
+        keeps every *other* connected client's observed `seq` stream
+        gap-free: the frontend's `wsClient.ts` treats
+        `envelope.seq > lastSeq + 1` as a dropped-message signal and
+        forces a resync, which would false-positive if a private message
+        silently consumed a number that only its one recipient ever
+        sees.
+        """
+        return self._next_seq_counter - 1
+
     def broadcast(self, event: "ServerEvent", connection_manager: "ConnectionManager") -> None:
         """Send `event` to every seated player's currently-bound socket,
         via `connection_manager`. Players with no active socket (never

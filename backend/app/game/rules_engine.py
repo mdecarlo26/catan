@@ -872,16 +872,28 @@ def _apply_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRobber
         _event(EventType.ROBBER_MOVED, RobberMovedPayload(actor=actor_id, hex=payload.hex))
     ]
 
-    candidates: list[PlayerId] = []
+    vertex_owners: list[PlayerId] = []
     for vertex_id in board_mod.get_adjacent_vertices(payload.hex):
         building = state.board.buildings.get(vertex_id)
         if building is None or building.player_id == actor_id:
             continue
-        if building.player_id in candidates:
+        if building.player_id in vertex_owners:
             continue
-        victim = state.players[building.player_id]
-        if dev_cards.hand_total(victim.hand) > 0:
-            candidates.append(building.player_id)
+        vertex_owners.append(building.player_id)
+
+    if state.settings.friendly_robber:
+        # Blocks production (the robber_hex move above is unconditional)
+        # but never yields a steal -- see
+        # `robber_strategies.friendly_robber_steal_candidates`.
+        candidates = robber_strategies.friendly_robber_steal_candidates(
+            state.players, vertex_owners
+        )
+    else:
+        candidates = [
+            pid
+            for pid in vertex_owners
+            if dev_cards.hand_total(state.players[pid].hand) > 0
+        ]
 
     if not candidates:
         state.pending = None
