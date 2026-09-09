@@ -91,15 +91,19 @@ Rush-mode auto-roll timer
 started/cancelled alongside `_turn_timer_loop`, that mirrors its exact
 shape for a different job: once a rush-mode game reaches `Phase.MAIN`, it
 polls `app.game.rules.rush_timer.should_auto_roll` against
-`settings.rush_roll_interval_seconds` and that room's most recent roll
-timestamp, and on a `True` result calls
+`settings.rush_roll_interval_seconds` and
+`app.game.state.GameState.last_dice_roll_ts` (that field is already the
+authoritative "when did the last roll happen" timestamp -- primed to
+`time.time()` the moment rush-mode `Phase.MAIN` begins by `RushModeSetup
+.on_setup_complete`, and updated on every subsequent auto-roll -- so this
+loop reads it directly rather than keeping its own separately-seeded
+copy; see `_rush_roll_loop`'s own docstring for a real bug that
+independent-copy approach had). On a `True` result it calls
 `app.game.rules_engine.apply_rush_auto_roll` (never a synthesized client
 action -- there's no "actor" for a system-driven roll) and broadcasts the
 resulting events plus a fresh snapshot round, exactly like any other
 gameplay action. For a non-rush-mode room, or a rush-mode room still in
-`Phase.SETUP`, the loop just keeps resetting its own baseline timestamp
-so the first real auto-roll (once `Phase.MAIN` begins) always waits a
-full interval rather than firing immediately.
+`Phase.SETUP`, the loop simply does nothing that poll.
 """
 
 from __future__ import annotations
@@ -203,10 +207,6 @@ _last_action_ts: dict[str, float] = {}
 #: room_code -> background rush-mode auto-roll task. See the module
 #: docstring's "Rush-mode auto-roll timer" section.
 _rush_roll_tasks: dict[str, asyncio.Task] = {}
-#: room_code -> wall-clock time.time() of that room's most recent
-#: rush-mode auto-roll, or (while not yet in rush-mode Phase.MAIN) just a
-#: repeatedly-reset "now" baseline. Drives `rush_timer.should_auto_roll`.
-_rush_last_roll_ts: dict[str, float] = {}
 
 
 def _now() -> float:
@@ -619,7 +619,6 @@ def _cancel_rush_roll(room_code: str) -> None:
     task = _rush_roll_tasks.pop(room_code, None)
     if task is not None:
         task.cancel()
-    _rush_last_roll_ts.pop(room_code, None)
 
 
 async def _force_advance_stalled_turn(room: Room, state: GameState) -> None:
@@ -698,9 +697,27 @@ async def _turn_timer_loop(room: Room) -> None:
 # ---------------------------------------------------------------------
 
 
+def _rush_roll_due(state: GameState, now: float) -> bool:
+    """True if a rush-mode `Phase.MAIN` game is due for its next
+    system-driven auto-roll right now. Split out from `_rush_roll_loop`
+    as a small, synchronous, directly-unit-testable helper -- see
+    `app.game.tests.test_rush_mode`'s
+    `test_rush_roll_due_uses_state_last_dice_roll_ts_directly` for the
+    regression this guards: `state.last_dice_roll_ts` (not some other,
+    separately-tracked timestamp) must be the one and only "when did the
+    last roll happen" source of truth, since it's already correctly
+    primed the instant rush-mode `Phase.MAIN` begins (see
+    `RushModeSetup.on_setup_complete`) with no dependency on this loop
+    having polled even once yet.
+    """
+    if not state.settings.rush_mode or state.phase != Phase.MAIN:
+        return False
+    last_ts = state.last_dice_roll_ts if state.last_dice_roll_ts is not None else now
+    return rush_timer.should_auto_roll(state.settings.rush_roll_interval_seconds, last_ts, now)
+
+
 async def _fire_rush_auto_roll(room: Room, state: GameState) -> None:
     events = rules_engine.apply_rush_auto_roll(state)
-    _rush_last_roll_ts[room.room_code] = _now()
     _touch(room.room_code)
     await _dispatch_rule_events(room, events)
     await _broadcast_snapshots(room, state)
@@ -715,6 +732,28 @@ async def _rush_roll_loop(room: Room) -> None:
     """Per-room background task, started/cancelled alongside
     `_turn_timer_loop` -- see the module docstring's "Rush-mode auto-roll
     timer" section for the full rationale.
+
+    The "last roll" baseline this polls against is `GameState
+    .last_dice_roll_ts` itself (never a separately-tracked timestamp here)
+    -- that field is already the authoritative source (see its own
+    docstring): `RushModeSetup.on_setup_complete` primes it to `time.time()`
+    the moment rush-mode `Phase.MAIN` begins, and `apply_rush_auto_roll`
+    updates it on every subsequent real auto-roll. An earlier version of
+    this loop kept its own module-level `room_code -> last roll ts` dict,
+    seeded only from this same loop's "not yet eligible" branch below; that
+    had a real bug (caught in live multi-client verification, not by any
+    unit test, since those all call `apply_rush_auto_roll` directly and
+    never exercise this polling loop): whenever a room's rush-mode setup
+    finished -- i.e. `Phase.MAIN` began -- *before* this loop's very first
+    `asyncio.sleep(...)` poll had a chance to run once (entirely plausible
+    for a real game: setup can easily complete in under
+    `turn_timer_check_interval_seconds`, the poll period), the dict entry
+    for that room was never seeded. Every later poll then fell through to
+    `.get(room_code, _now())`'s fallback -- computing "now" twice, back to
+    back, so the elapsed time was always ~0 -- and the auto-roll condition
+    could then never become true for the rest of that game. Reading
+    `state.last_dice_roll_ts` directly removes the redundant, independently
+    -seeded copy that could fall out of sync with it in exactly this way.
     """
     room_code = room.room_code
     try:
@@ -728,16 +767,7 @@ async def _rush_roll_loop(room: Room) -> None:
             if state is None or state.phase == Phase.GAME_OVER:
                 return
 
-            if not state.settings.rush_mode or state.phase != Phase.MAIN:
-                # Not (yet) eligible to auto-roll -- non-rush game, or a
-                # rush-mode game still in Phase.SETUP. Keep resetting the
-                # baseline so the first real auto-roll after MAIN begins
-                # waits a full interval rather than firing immediately.
-                _rush_last_roll_ts[room_code] = _now()
-                continue
-
-            last_ts = _rush_last_roll_ts.get(room_code, _now())
-            if rush_timer.should_auto_roll(state.settings.rush_roll_interval_seconds, last_ts, _now()):
+            if _rush_roll_due(state, _now()):
                 await _fire_rush_auto_roll(room, state)
     except asyncio.CancelledError:
         return

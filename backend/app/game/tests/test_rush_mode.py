@@ -513,6 +513,59 @@ def test_end_turn_rejected_regardless_of_special_build_phase_value_in_rush_mode(
 # ---------------------------------------------------------------------
 
 
+def test_rush_roll_due_uses_state_last_dice_roll_ts_directly():
+    """Regression test for a real bug caught in live multi-client
+    verification (never by a unit test, since none of the tests above
+    exercise `app.api.websocket`'s background polling loop): an earlier
+    version of `app.api.websocket._rush_roll_loop` tracked its own
+    module-level `room_code -> last roll timestamp` dict, seeded only
+    from the loop's own "not yet eligible" branch (i.e. only while the
+    game was NOT YET in rush-mode `Phase.MAIN`). Whenever a real game's
+    setup finished -- entering `Phase.MAIN` -- before that loop's very
+    first poll had run even once (entirely plausible: setup can finish
+    in well under one `turn_timer_check_interval_seconds` poll period),
+    that dict entry was never seeded. Every later poll then computed
+    "now" twice back-to-back as its own fallback, so the elapsed time
+    was always ~0 and the auto-roll condition could never become true
+    again for the rest of that game -- dice simply never auto-rolled.
+
+    The fix: `app.api.websocket._rush_roll_due(state, now)` reads
+    `GameState.last_dice_roll_ts` directly -- which is already primed to
+    `time.time()` the instant rush-mode `Phase.MAIN` begins (see
+    `RushModeSetup.on_setup_complete`) with no dependency on any external
+    polling loop having run yet. This test constructs exactly the buggy
+    scenario (a state that "just" reached rush-mode `Phase.MAIN`, as if
+    zero polls had ever happened) and confirms the auto-roll still
+    correctly becomes due once the interval elapses.
+    """
+    from app.api.websocket import _rush_roll_due
+
+    state = _make_rush_state(4, rush_roll_interval_seconds=5)
+    # Simulate RushModeSetup.on_setup_complete having *just* primed this,
+    # with the polling loop never having ticked even once yet (the exact
+    # condition that broke the old dict-based tracking).
+    state.last_dice_roll_ts = 1000.0
+
+    assert _rush_roll_due(state, now=1000.0) is False
+    assert _rush_roll_due(state, now=1004.9) is False
+    assert _rush_roll_due(state, now=1005.0) is True
+    assert _rush_roll_due(state, now=1050.0) is True
+
+
+def test_rush_roll_due_false_outside_rush_main():
+    from app.api.websocket import _rush_roll_due
+
+    state = _make_rush_state(4, rush_roll_interval_seconds=5)
+    state.last_dice_roll_ts = 1000.0
+
+    state.settings.rush_mode = False
+    assert _rush_roll_due(state, now=2000.0) is False
+
+    state.settings.rush_mode = True
+    state.phase = Phase.SETUP
+    assert _rush_roll_due(state, now=2000.0) is False
+
+
 def test_should_auto_roll_pure_logic():
     assert rush_timer.should_auto_roll(15, last_roll_ts=100.0, now_ts=114.9) is False
     assert rush_timer.should_auto_roll(15, last_roll_ts=100.0, now_ts=115.0) is True
