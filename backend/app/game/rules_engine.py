@@ -37,6 +37,7 @@ branch and isn't available in this worktree.
 from __future__ import annotations
 
 import random
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Callable
@@ -186,20 +187,63 @@ def _effective_special_build_phase(settings) -> bool:
     """The concrete on/off value of `settings.special_build_phase`: the
     explicit host override if set, else `player_count >= 5` per the
     official 5-6p expansion default. See that field's docstring.
+
+    Rush mode has no concept of turns, so the Special Build Phase --
+    fundamentally an extra build-only round appended to the end of one
+    specific player's turn -- is inapplicable whenever `settings.rush_mode`
+    is on, regardless of `special_build_phase`'s own value (explicit
+    override or derived default) or `player_count`. This always returns
+    `False` in that case. In practice `_apply_end_turn`'s SBP branch is
+    already unreachable while rush_mode is on (rules_engine rejects
+    `END_TURN` outright then -- see `_validate_end_turn`), but this
+    short-circuit keeps the function itself correct/safe to call from
+    anywhere (e.g. a future settings-form "what will actually happen"
+    UI helper) rather than relying on that indirection alone.
     """
+    if settings.rush_mode:
+        return False
     if settings.special_build_phase is not None:
         return settings.special_build_phase
     return settings.player_count >= 5
 
 
+def _require_rush_unblocked(state: GameState, actor_id: PlayerId) -> None:
+    """Rush mode has no "current player" to gate on -- any seated player
+    may build/trade/buy or play dev cards at any time -- EXCEPT a player
+    with their own unresolved robber obligation
+    (`rush_pending_robber.actor == actor_id`) or discard debt
+    (`actor_id in rush_pending_discard.required_counts`), who must
+    resolve that first. This mirrors, per-player, the same block normal
+    mode achieves globally via `Phase.ROBBER_MOVE` / `Phase.ROBBER_DISCARD`
+    -- see `GameState.rush_pending_discard` / `rush_pending_robber`'s
+    docstrings for why rush mode can't just reuse the single `pending`
+    slot the way normal mode does.
+    """
+    pending_robber = state.rush_pending_robber
+    if pending_robber is not None and pending_robber.actor == actor_id:
+        raise RuleViolation(
+            "action_pending", "Resolve your pending robber move before doing anything else."
+        )
+    pending_discard = state.rush_pending_discard
+    if pending_discard is not None and actor_id in pending_discard.required_counts:
+        raise RuleViolation(
+            "action_pending", "Resolve your pending discard before doing anything else."
+        )
+
+
 def _require_actionable_player(state: GameState, actor_id: PlayerId) -> None:
-    """Whoever may currently spend resources / build right now: the
-    normal current player during `Phase.MAIN`, or whoever is up in
-    `GameState.special_build_queue` during `Phase.SPECIAL_BUILD`.
+    """Whoever may currently spend resources / build right now: whoever
+    is up in `GameState.special_build_queue` during `Phase.SPECIAL_BUILD`,
+    any not-individually-blocked seated player during rush mode's
+    `Phase.MAIN` (see `_require_rush_unblocked`), or else the normal
+    current player.
     """
     if state.phase == Phase.SPECIAL_BUILD:
         if not state.special_build_queue or actor_id != state.special_build_queue[0]:
             raise RuleViolation("not_your_turn", "It is not your special build turn.")
+        return
+    if state.settings.rush_mode and state.phase == Phase.MAIN:
+        _require_rush_unblocked(state, actor_id)
         return
     _require_current_player(state, actor_id)
 
@@ -283,7 +327,26 @@ def _check_win_condition(state: GameState) -> list[RuleEvent]:
 
 
 def _validate_setup_turn(state: GameState, actor_id: PlayerId, expected_action: ActionType) -> None:
-    strategy = setup_strategies.SETUP_STRATEGIES[state.settings.rush_mode]
+    if state.settings.rush_mode:
+        # Simultaneous placement: only actor_id's OWN progress matters --
+        # see setup_strategies.RushModeSetup's module-level docstring for
+        # why this doesn't share SnakeDraftSetup's single-global-next
+        # query shape.
+        strategy: setup_strategies.RushModeSetup = setup_strategies.SETUP_STRATEGIES[True]  # type: ignore[assignment]
+        expected = strategy.next_expected_action_for_player(state, actor_id)
+        if expected is None:
+            raise RuleViolation(
+                "setup_already_complete",
+                "You have already placed your full setup allotment (2 settlements + 2 roads).",
+            )
+        if expected != expected_action:
+            raise RuleViolation(
+                "wrong_setup_action",
+                f"Expected {expected.value} next, not {expected_action.value}.",
+            )
+        return
+
+    strategy = setup_strategies.SETUP_STRATEGIES[False]  # type: ignore[assignment]
     expected_player, expected_action_type = strategy.get_next_setup_action(state)
     if actor_id != expected_player:
         raise RuleViolation("not_your_turn", "It is not your turn to place during setup.")
@@ -386,6 +449,11 @@ def _distribute_resources(state: GameState, total: int) -> dict[PlayerId, Resour
 
 
 def _validate_roll_dice(state: GameState, actor_id: PlayerId, payload) -> None:
+    if state.settings.rush_mode:
+        raise RuleViolation(
+            "rush_mode_auto_roll",
+            "Dice roll automatically in rush mode; ROLL_DICE cannot be submitted directly.",
+        )
     _require_current_player(state, actor_id)
     if state.pending is not None:
         raise RuleViolation("action_pending", "Cannot roll while another action is pending.")
@@ -396,6 +464,7 @@ def _apply_roll_dice(state: GameState, actor_id: PlayerId, payload) -> list[Rule
     die2 = random.randint(1, 6)
     total = die1 + die2
     state.last_dice_roll = (die1, die2)
+    state.last_dice_roll_ts = time.time()
 
     events = [
         _event(
@@ -422,6 +491,131 @@ def _apply_roll_dice(state: GameState, actor_id: PlayerId, payload) -> list[Rule
             _event(EventType.RESOURCES_DISTRIBUTED, ResourcesDistributedPayload(distribution=distribution))
         )
 
+    return events
+
+
+# ---------------------------------------------------------------------
+# Rush mode: system-driven auto-roll
+# ---------------------------------------------------------------------
+
+
+def _next_rush_robber_mover(state: GameState) -> PlayerId | None:
+    """Assign (and advance the rotation pointer past) the next connected,
+    seated player starting at `GameState.rush_robber_turn_index`, per
+    that field's docstring. Returns `None` (leaving the pointer
+    untouched) only if literally nobody is connected, which shouldn't
+    normally happen but is handled defensively rather than crashing the
+    game loop.
+    """
+    order = state.turn_order
+    n = len(order)
+    if n == 0:
+        return None
+    for offset in range(n):
+        idx = (state.rush_robber_turn_index + offset) % n
+        candidate = order[idx]
+        if state.players[candidate].is_connected:
+            state.rush_robber_turn_index = (idx + 1) % n
+            return candidate
+    return None
+
+
+def _advance_rush_robber_pointer(state: GameState) -> None:
+    """Skip the rotation pointer forward by one slot without assigning
+    anyone -- used when a 7 fires while a previous rush-mode robber-move
+    is still unresolved, per `GameState.rush_robber_turn_index`'s
+    documented "queue by skipping" tradeoff (don't double-assign the one
+    physical robber to two people at once).
+    """
+    n = len(state.turn_order)
+    if n:
+        state.rush_robber_turn_index = (state.rush_robber_turn_index + 1) % n
+
+
+def apply_rush_auto_roll(state: GameState) -> list[RuleEvent]:
+    """System-driven dice roll for rush mode's `Phase.MAIN`: called by the
+    per-room background task in `app.api.websocket` on a fixed interval
+    (`settings.rush_roll_interval_seconds`), never in response to a
+    client action -- `ROLL_DICE` is rejected outright while `rush_mode`
+    is on (see `_validate_roll_dice`). There is deliberately no `actor_id`
+    parameter: nobody "did" this roll.
+
+    Reuses `_distribute_resources` exactly as the client-invoked
+    `ROLL_DICE` path does for a non-7 roll, so the actual resource-
+    distribution mechanics (bank-shortage gating, city double-yield, ...)
+    aren't duplicated between the two call sites. `_discard_requirements`
+    is reused the same way for computing who owes a discard.
+
+    On a 7, unlike normal mode, this does NOT change `state.phase` or
+    touch `state.pending` -- see `GameState.rush_pending_discard` /
+    `rush_pending_robber`'s docstrings for the concurrent, per-player
+    obligation model this uses instead, and `_next_rush_robber_mover` /
+    `_advance_rush_robber_pointer` for the rotation/"don't double-assign"
+    logic.
+
+    Design choice -- dev-card "not the turn you bought it" eligibility:
+    rush mode has no per-player turn boundary at which to fold
+    `PlayerState.dev_cards_bought_this_turn` into playable `dev_cards`
+    (normally an `END_TURN`-time step -- see
+    `dev_cards.fold_bought_this_turn_into_hand` -- and `END_TURN` is
+    rejected outright in rush mode). Each auto-roll is the closest analog
+    to "a new round begins" for every player at once, so it's used as
+    that boundary instead: a dev card bought becomes playable starting
+    with the *next* auto-roll tick, not instantly. This is a deliberate,
+    documented interpretation where the feature spec is silent.
+    """
+    if not state.settings.rush_mode:
+        raise RuntimeError("apply_rush_auto_roll() called for a non-rush-mode game")
+
+    for player in state.players.values():
+        dev_cards.fold_bought_this_turn_into_hand(player)
+
+    die1 = random.randint(1, 6)
+    die2 = random.randint(1, 6)
+    total = die1 + die2
+    state.last_dice_roll = (die1, die2)
+    state.last_dice_roll_ts = time.time()
+
+    events: list[RuleEvent] = [
+        _event(
+            EventType.DICE_ROLLED,
+            # No single roller in rush mode -- see this function's docstring.
+            DiceRolledPayload(player_id=None, die1=die1, die2=die2, total=total),
+        )
+    ]
+
+    if total == 7:
+        # (a) Discard debts: reused as-is from `_discard_requirements`,
+        # merged into any still-outstanding debt from an earlier
+        # unresolved 7 (recomputing is safe/idempotent here since a
+        # player's owed count can only change by actually discarding,
+        # which clears their entry entirely -- see `_apply_discard_cards`).
+        required = _discard_requirements(state)
+        if required:
+            merged = dict(state.rush_pending_discard.required_counts) if state.rush_pending_discard else {}
+            merged.update(required)
+            state.rush_pending_discard = AwaitingDiscard(required_counts=merged)
+            events.append(
+                _event(EventType.DISCARD_REQUIRED, DiscardRequiredPayload(required_counts=merged))
+            )
+
+        # (b) Robber-mover assignment: separate from (a) above -- a
+        # player can owe a discard AND be assigned the robber at the same
+        # time, and each is resolved independently (`_require_rush_unblocked`
+        # blocks that player from other actions until BOTH are cleared).
+        if state.rush_pending_robber is None:
+            assignee = _next_rush_robber_mover(state)
+            if assignee is not None:
+                state.rush_pending_robber = AwaitingRobberPlacement(actor=assignee, reason="dice_roll")
+        else:
+            _advance_rush_robber_pointer(state)
+    else:
+        distribution = _distribute_resources(state, total)
+        events.append(
+            _event(EventType.RESOURCES_DISTRIBUTED, ResourcesDistributedPayload(distribution=distribution))
+        )
+
+    events.extend(_check_win_condition(state))
     return events
 
 
@@ -610,7 +804,7 @@ def _apply_buy_dev_card(state: GameState, actor_id: PlayerId, payload) -> list[R
 
 
 def _validate_play_dev_card(state: GameState, actor_id: PlayerId, payload: PlayDevCardPayload) -> None:
-    _require_current_player(state, actor_id)
+    _require_actionable_player(state, actor_id)
 
     if payload.card_type == DevCardType.VICTORY_POINT:
         raise RuleViolation(
@@ -620,6 +814,25 @@ def _validate_play_dev_card(state: GameState, actor_id: PlayerId, payload: PlayD
     if state.players[actor_id].dev_cards.get(payload.card_type, 0) < 1:
         raise RuleViolation(
             "card_not_owned", "You don't own that dev card (or it was bought this turn)."
+        )
+    if (
+        payload.card_type == DevCardType.KNIGHT
+        and state.settings.rush_mode
+        and state.rush_pending_robber is not None
+    ):
+        # There's only one physical robber -- rush mode can't let a
+        # second player start moving it while another player's
+        # dice-roll-triggered (or an earlier Knight-triggered) robber
+        # move is still unresolved. Unlike the "don't double-assign,
+        # advance the pointer" tradeoff for consecutive auto-rolled 7s
+        # (see GameState.rush_robber_turn_index), a Knight play is a
+        # discretionary player action, not a scheduled system event, so
+        # simply rejecting it (the player can retry once the current
+        # robber move resolves) is the more honest behavior here -- this
+        # is a genuine shared-resource contention, not a turn gate.
+        raise RuleViolation(
+            "robber_move_in_progress",
+            "Another robber move is already pending; try playing this Knight again shortly.",
         )
 
     if payload.card_type == DevCardType.MONOPOLY:
@@ -674,8 +887,15 @@ def _apply_play_dev_card(state: GameState, actor_id: PlayerId, payload: PlayDevC
                     ),
                 )
             )
-        state.phase = Phase.ROBBER_MOVE
-        state.pending = AwaitingRobberPlacement(actor=actor_id, reason="knight_card")
+        if state.settings.rush_mode:
+            # Stays in Phase.MAIN -- only the playing actor is blocked
+            # (via rush_pending_robber, checked by
+            # _require_rush_unblocked), not the whole game. Validated
+            # unassigned by _validate_play_dev_card above.
+            state.rush_pending_robber = AwaitingRobberPlacement(actor=actor_id, reason="knight_card")
+        else:
+            state.phase = Phase.ROBBER_MOVE
+            state.pending = AwaitingRobberPlacement(actor=actor_id, reason="knight_card")
 
     elif payload.card_type == DevCardType.ROAD_BUILDING:
         for edge_id in payload.road_building_edges:
@@ -782,6 +1002,16 @@ def _apply_port_trade(state: GameState, actor_id: PlayerId, payload: PortTradePa
 
 
 def _validate_propose_trade(state: GameState, actor_id: PlayerId, payload: ProposeTradePayload) -> None:
+    # Scope decision: even in rush mode, only one PROPOSE_TRADE may be
+    # outstanding at a time game-wide (via the shared `state.pending`
+    # slot, same as normal mode) -- true concurrent multi-trade
+    # negotiation would need a per-trade id'd collection instead of one
+    # global slot, which is a materially bigger redesign than this
+    # feature's scope. This is treated as a shared-resource legality
+    # precondition ("no trade is currently pending"), not a turn gate:
+    # any player, not just "whoever's turn it is", can hit it, and it
+    # never blocks anyone from building/buying/using bank or port trades
+    # in the meantime -- only from *proposing a second* PROPOSE_TRADE.
     _require_actionable_player(state, actor_id)
     if state.pending is not None:
         raise RuleViolation("action_pending", "Another action is already pending.")
@@ -877,7 +1107,18 @@ def _apply_respond_trade(state: GameState, actor_id: PlayerId, payload: RespondT
 
 
 def _validate_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRobberPayload) -> None:
-    pending = state.pending
+    if state.settings.rush_mode:
+        if state.rush_pending_discard and actor_id in state.rush_pending_discard.required_counts:
+            # Same ordering as normal mode (discard resolves before the
+            # robber moves), just enforced per-player instead of via a
+            # global phase, since it's the SAME player who'd otherwise be
+            # both discard-owing and the assigned robber-mover.
+            raise RuleViolation(
+                "discard_owed", "Discard your owed cards before moving the robber."
+            )
+        pending = state.rush_pending_robber
+    else:
+        pending = state.pending
     if not isinstance(pending, AwaitingRobberPlacement):
         raise RuleViolation("no_pending_robber_move", "The robber isn't waiting to be moved.")
     if actor_id != pending.actor:
@@ -888,14 +1129,22 @@ def _validate_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRob
         raise RuleViolation("must_move", "The robber must move to a different hex.")
 
 
-def _apply_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRobberPayload) -> list[RuleEvent]:
-    state.board.robber_hex = payload.hex
+def _robber_move_and_gather_steal_candidates(
+    state: GameState, actor_id: PlayerId, hex_coord
+) -> tuple[list[RuleEvent], list[PlayerId]]:
+    """Move the robber (unconditional board mutation) and compute steal
+    candidates, per `friendly_robber` vs. normal rules. Shared by normal
+    mode's and rush mode's `MOVE_ROBBER` handling so this logic -- which
+    doesn't depend on "whose turn it is", only on the actor and the
+    target hex -- isn't duplicated between the two.
+    """
+    state.board.robber_hex = hex_coord
     events: list[RuleEvent] = [
-        _event(EventType.ROBBER_MOVED, RobberMovedPayload(actor=actor_id, hex=payload.hex))
+        _event(EventType.ROBBER_MOVED, RobberMovedPayload(actor=actor_id, hex=hex_coord))
     ]
 
     vertex_owners: list[PlayerId] = []
-    for vertex_id in board_mod.get_adjacent_vertices(payload.hex):
+    for vertex_id in board_mod.get_adjacent_vertices(hex_coord):
         building = state.board.buildings.get(vertex_id)
         if building is None or building.player_id == actor_id:
             continue
@@ -916,30 +1165,45 @@ def _apply_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRobber
             for pid in vertex_owners
             if dev_cards.hand_total(state.players[pid].hand) > 0
         ]
+    return events, candidates
 
-    if not candidates:
-        state.pending = None
-        state.phase = Phase.MAIN
-    elif len(candidates) == 1:
-        stolen = robber_strategies.normal_steal(state.players, actor_id, candidates[0])
-        events.append(
-            _event(
+
+def _apply_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRobberPayload) -> list[RuleEvent]:
+    events, candidates = _robber_move_and_gather_steal_candidates(state, actor_id, payload.hex)
+
+    resolved_steal_event: RuleEvent | None = None
+    next_pending: AwaitingSteal | None = None
+    if candidates:
+        if len(candidates) == 1:
+            stolen = robber_strategies.normal_steal(state.players, actor_id, candidates[0])
+            resolved_steal_event = _event(
                 EventType.RESOURCE_STOLEN,
                 ResourceStolenPayload(actor=actor_id, victim=candidates[0], resource=stolen),
             )
-        )
-        state.pending = None
-        state.phase = Phase.MAIN
+        else:
+            next_pending = AwaitingSteal(actor=actor_id, candidate_targets=candidates)
+
+    if resolved_steal_event is not None:
+        events.append(resolved_steal_event)
+
+    if state.settings.rush_mode:
+        # Stays in Phase.MAIN throughout -- only `actor_id` is
+        # blocked (via rush_pending_robber, see _require_rush_unblocked),
+        # not the whole game.
+        state.rush_pending_robber = next_pending
     else:
-        state.pending = AwaitingSteal(actor=actor_id, candidate_targets=candidates)
-        # Phase stays ROBBER_MOVE until STEAL_RESOURCE resolves it.
+        state.pending = next_pending
+        state.phase = Phase.MAIN if next_pending is None else Phase.ROBBER_MOVE
+        # (Phase.ROBBER_MOVE is a no-op re-assignment when next_pending is
+        # already an AwaitingSteal set from this same call -- state.phase
+        # was already ROBBER_MOVE per the phase table's MOVE_ROBBER gate.)
 
     events.extend(_check_win_condition(state))
     return events
 
 
 def _validate_steal_resource(state: GameState, actor_id: PlayerId, payload: StealResourcePayload) -> None:
-    pending = state.pending
+    pending = state.rush_pending_robber if state.settings.rush_mode else state.pending
     if not isinstance(pending, AwaitingSteal):
         raise RuleViolation("no_pending_steal", "No steal is currently pending.")
     if actor_id != pending.actor:
@@ -950,8 +1214,11 @@ def _validate_steal_resource(state: GameState, actor_id: PlayerId, payload: Stea
 
 def _apply_steal_resource(state: GameState, actor_id: PlayerId, payload: StealResourcePayload) -> list[RuleEvent]:
     stolen = robber_strategies.normal_steal(state.players, actor_id, payload.target_player_id)
-    state.pending = None
-    state.phase = Phase.MAIN
+    if state.settings.rush_mode:
+        state.rush_pending_robber = None
+    else:
+        state.pending = None
+        state.phase = Phase.MAIN
     events = [
         _event(
             EventType.RESOURCE_STOLEN,
@@ -963,7 +1230,7 @@ def _apply_steal_resource(state: GameState, actor_id: PlayerId, payload: StealRe
 
 
 def _validate_discard_cards(state: GameState, actor_id: PlayerId, payload: DiscardCardsPayload) -> None:
-    pending = state.pending
+    pending = state.rush_pending_discard if state.settings.rush_mode else state.pending
     if not isinstance(pending, AwaitingDiscard):
         raise RuleViolation("no_discard_owed", "No discard is currently owed.")
     owed = pending.required_counts.get(actor_id)
@@ -977,7 +1244,7 @@ def _validate_discard_cards(state: GameState, actor_id: PlayerId, payload: Disca
 
 
 def _apply_discard_cards(state: GameState, actor_id: PlayerId, payload: DiscardCardsPayload) -> list[RuleEvent]:
-    pending = state.pending
+    pending = state.rush_pending_discard if state.settings.rush_mode else state.pending
     assert isinstance(pending, AwaitingDiscard)
     player = state.players[actor_id]
 
@@ -996,9 +1263,18 @@ def _apply_discard_cards(state: GameState, actor_id: PlayerId, payload: DiscardC
     ]
 
     if not pending.required_counts:
-        roller = _current_player(state)
-        state.phase = Phase.ROBBER_MOVE
-        state.pending = AwaitingRobberPlacement(actor=roller, reason="dice_roll")
+        if state.settings.rush_mode:
+            state.rush_pending_discard = None
+            # Unlike normal mode, this does NOT trigger a robber-move
+            # assignment -- rush mode decides that independently, at
+            # roll time (see apply_rush_auto_roll), not gated behind
+            # discard resolution. A rush-mode 7's discard debts and its
+            # robber-mover assignment are resolved on separate,
+            # independent tracks (see that function's own comment).
+        else:
+            roller = _current_player(state)
+            state.phase = Phase.ROBBER_MOVE
+            state.pending = AwaitingRobberPlacement(actor=roller, reason="dice_roll")
 
     return events
 
@@ -1011,7 +1287,11 @@ def _apply_discard_cards(state: GameState, actor_id: PlayerId, payload: DiscardC
 def _validate_play_nuke(state: GameState, actor_id: PlayerId, payload: PlayNukePayload) -> None:
     if not state.settings.nuke_mode:
         raise RuleViolation("nuke_disabled", "Nuke mode is not enabled for this game.")
-    _require_current_player(state, actor_id)
+    # Nuke is a resource-spend, not a turn-taking action -- allow whoever
+    # may currently act (any unblocked player in rush mode's MAIN phase,
+    # else the normal current player) rather than hard-coding "current
+    # player", so nuke_mode still works when combined with rush_mode.
+    _require_actionable_player(state, actor_id)
     if payload.target_player_id == actor_id:
         raise RuleViolation("invalid_target", "Cannot nuke yourself.")
     if payload.target_player_id not in state.players:
@@ -1068,6 +1348,11 @@ def _apply_play_nuke(state: GameState, actor_id: PlayerId, payload: PlayNukePayl
 
 
 def _validate_end_turn(state: GameState, actor_id: PlayerId, payload) -> None:
+    if state.settings.rush_mode:
+        raise RuleViolation(
+            "rush_mode_no_turns",
+            "END_TURN is meaningless in rush mode; there are no turns to end.",
+        )
     if state.phase == Phase.SPECIAL_BUILD:
         # Reused for "I'm done with my special build turn" -- its meaning
         # is unambiguous from phase context. Only the player currently up

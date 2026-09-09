@@ -43,7 +43,15 @@ export const SETTINGS_REGISTRY_MOCK: LobbySettingFieldMeta[] = [
     type: "bool",
     default: false,
     description:
-      "Alternate, faster initial-setup strategy. Exact behavior is still being designed; currently a placeholder toggle.",
+      "No turns: everyone may build/trade/play dev cards at any time, dice roll automatically, and setup placement is simultaneous. Disables special_build_phase.",
+  },
+  {
+    key: "rush_roll_interval_seconds",
+    type: "int",
+    default: 15,
+    description: "Seconds between automatic dice rolls in rush mode. Ignored unless rush_mode is on.",
+    min_value: 5,
+    max_value: null,
   },
   {
     key: "nuke_mode",
@@ -89,6 +97,7 @@ export const MOCK_GAME_SETTINGS: GameSettings = {
   victory_points_target: 10,
   board_layout: "random",
   rush_mode: false,
+  rush_roll_interval_seconds: 15,
   nuke_mode: false,
   special_build_phase: null,
   discard_limit: 7,

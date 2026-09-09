@@ -25,7 +25,9 @@ owner"):
     only; `AwaitingSteal.candidate_targets` is player ids only (no hand
     contents); `AwaitingTradeResponse.offered`/`requested` describe an
     already-public trade offer. None of these leak resource identity
-    beyond what's already public.
+    beyond what's already public. `GameState.rush_pending_discard` /
+    `rush_pending_robber` reuse those same models (see their own
+    docstrings) and are passed through unmasked for the same reason.
   - `ResourceStolenPayload.resource` -- populated for the actor/victim,
     `None` for bystanders, per its own docstring. This is a *transient
     event* payload, not part of `GameState`/`ClientGameStateView`, so
@@ -121,5 +123,8 @@ def to_client_view(state: GameState, viewer_player_id: str) -> ClientGameStateVi
         largest_army_holder=state.largest_army_holder,
         pending=state.pending,
         special_build_queue=list(state.special_build_queue),
+        rush_pending_discard=state.rush_pending_discard,
+        rush_pending_robber=state.rush_pending_robber,
+        last_dice_roll_ts=state.last_dice_roll_ts,
         viewer_player_id=viewer_player_id,
     )

@@ -73,6 +73,24 @@ function computeSetupExpectation(
   return { playerId: order[roadsBuilt], action: "road" };
 }
 
+/** Rush mode's simultaneous-setup equivalent of `computeSetupExpectation`:
+ * mirrors backend/app/game/rules/setup_strategies.py's
+ * `RushModeSetup.next_expected_action_for_player` -- what THIS player
+ * personally owes next (settlement, road, or null once they've placed
+ * their full 2+2 quota), independent of every other player's progress. */
+function computeRushSetupAction(
+  board: WireBoardView | undefined,
+  playerId: PlayerId | null
+): "settlement" | "road" | null {
+  if (!board || !playerId) return null;
+  const settlements = board.buildings.filter(
+    (b) => b.building_type === "settlement" && b.player_id === playerId
+  ).length;
+  const roads = board.roads.filter((r) => r.player_id === playerId).length;
+  if (settlements >= 2 && roads >= 2) return null;
+  return settlements === roads ? "settlement" : "road";
+}
+
 function computePortAccess(board: WireBoardView, playerId: PlayerId): PortAccess[] {
   const owned = new Set(
     board.buildings.filter((b) => b.player_id === playerId).map((b) => vertexIdKey(b.vertex_id))
@@ -281,6 +299,19 @@ export default function Game() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nukeEvent?.seq]);
 
+  // Rush mode's auto-roll countdown is derived client-side from
+  // settings.rush_roll_interval_seconds + last_dice_roll_ts (see
+  // ClientGameStateView's doc comments) rather than pushed by the
+  // server every second -- this just ticks a local clock to re-render
+  // that derivation once a second while rush mode is active.
+  const rushMode = !!view?.settings.rush_mode;
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!rushMode) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [rushMode]);
+
   useEffect(() => {
     const unbind = bindGameStoreToWsClient(wsClient);
     if (wsClient.getStatus() === "disconnected") {
@@ -306,13 +337,29 @@ export default function Game() {
 
   const myId = view?.viewer_player_id ?? storeMyPlayerId ?? loadSessionForRoom(roomCode)?.player_id ?? null;
   const me = view && myId ? view.players[myId] : undefined;
-  const isMyTurn = !!(view && myId && view.turn_order[view.current_player_index] === myId);
+  const isMyTurn = !!(view && myId && !rushMode && view.turn_order[view.current_player_index] === myId);
   const pending = view?.pending ?? null;
+  // Rush mode has no "current player" -- every seated player may act at
+  // any time UNLESS they personally owe a discard or are the player
+  // currently assigned to move the robber (mirrors
+  // rules_engine._require_rush_unblocked exactly).
+  const rushBlocked = !!(
+    rushMode &&
+    myId &&
+    view &&
+    ((view.rush_pending_robber && view.rush_pending_robber.actor === myId) ||
+      (view.rush_pending_discard && view.rush_pending_discard.required_counts[myId] != null))
+  );
   // Gates the normal MAIN-phase action set (build/buy/play-dev-card/end
-  // turn): the viewer's turn, no pending robber/discard/trade-response
-  // action, and not mid-flow on a separate exclusive interaction (nuke
-  // targeting).
-  const canAct = !!view && view.phase === "main" && isMyTurn && !pending && nukeStep === "idle";
+  // turn): in rush mode, any unblocked player at any time; otherwise the
+  // viewer's own turn with no pending robber/discard/trade-response
+  // action. Never gated while mid-flow on a separate exclusive
+  // interaction (nuke targeting).
+  const canAct =
+    !!view &&
+    view.phase === "main" &&
+    nukeStep === "idle" &&
+    (rushMode ? !rushBlocked : isMyTurn && !pending);
   const nukeEligible = isNukeEligibleHand(me?.hand);
 
   const graph = useMemo(() => (view ? buildBoardGraph(view.board) : null), [view?.board]);
@@ -321,18 +368,31 @@ export default function Game() {
     () => computeSetupExpectation(view?.phase, view?.turn_order, view?.board, view?.settings.rush_mode),
     [view?.phase, view?.turn_order, view?.board, view?.settings.rush_mode]
   );
-  const isMySetupTurn = !!(setupExpectation && myId && setupExpectation.playerId === myId);
+  const rushSetupAction = useMemo(
+    () => (rushMode ? computeRushSetupAction(view?.board, myId) : null),
+    [rushMode, view?.board, myId]
+  );
+  // Unified "what does the viewer personally owe during SETUP right now"
+  // -- snake draft's single global next-placer in normal mode, or this
+  // player's own independent progress in rush mode (see
+  // computeRushSetupAction).
+  const mySetupAction: "settlement" | "road" | null = rushMode
+    ? rushSetupAction
+    : setupExpectation && myId && setupExpectation.playerId === myId
+      ? setupExpectation.action
+      : null;
+  const isMySetupTurn = mySetupAction != null;
 
   let legalVertexIds: readonly VertexId[] | null = null;
   let legalEdgeIds: readonly EdgeId[] | null = null;
   if (view && graph && myId) {
     if (view.phase === "setup" && isMySetupTurn) {
-      if (setupExpectation!.action === "settlement") {
+      if (mySetupAction === "settlement") {
         legalVertexIds = legalSettlementVertexIds(graph, view.board, myId, false);
       } else {
         legalEdgeIds = legalRoadEdgeIds(graph, view.board, myId);
       }
-    } else if (view.phase === "main" && isMyTurn && buildMode) {
+    } else if (view.phase === "main" && (rushMode ? !rushBlocked : isMyTurn) && buildMode) {
       if (buildMode === "settlement") {
         legalVertexIds = legalSettlementVertexIds(graph, view.board, myId, true);
       } else if (buildMode === "city") {
@@ -340,7 +400,7 @@ export default function Game() {
       } else if (buildMode === "road" || buildMode === "road_building") {
         legalEdgeIds = legalRoadEdgeIds(graph, view.board, myId);
       }
-    } else if (view.phase === "main" && isMyTurn && nukeTargetPlayer) {
+    } else if (view.phase === "main" && (rushMode ? !rushBlocked : isMyTurn) && nukeTargetPlayer) {
       // Nuke target-selection: highlight only the target player's own
       // settlements/cities (pick_vertex step) or roads (pick_edge step),
       // reusing the same legalVertexIds/legalEdgeIds highlighting
@@ -396,7 +456,7 @@ export default function Game() {
       setNukeStep("pick_edge");
       return;
     }
-    if (view.phase === "setup" && isMySetupTurn && setupExpectation!.action === "settlement") {
+    if (view.phase === "setup" && isMySetupTurn && mySetupAction === "settlement") {
       wsClient.send({ type: "BUILD_SETTLEMENT", payload: { vertex_id: vertexId } });
       return;
     }
@@ -416,7 +476,7 @@ export default function Game() {
       setNukeStep("confirm");
       return;
     }
-    if (view.phase === "setup" && isMySetupTurn && setupExpectation!.action === "road") {
+    if (view.phase === "setup" && isMySetupTurn && mySetupAction === "road") {
       wsClient.send({ type: "BUILD_ROAD", payload: { edge_id: edgeId } });
       return;
     }
@@ -479,6 +539,47 @@ export default function Game() {
     message: entry.text,
   }));
 
+  // Live "next auto-roll in Ns" countdown, derived from
+  // settings.rush_roll_interval_seconds + last_dice_roll_ts and ticked by
+  // `nowMs` (see the effect above). null outside rush mode, or before
+  // the server has primed last_dice_roll_ts (shouldn't normally happen
+  // once Phase.MAIN begins -- see RushModeSetup.on_setup_complete).
+  const rushRollCountdownSeconds =
+    rushMode && view && view.last_dice_roll_ts != null
+      ? Math.max(0, Math.ceil(view.settings.rush_roll_interval_seconds - (nowMs / 1000 - view.last_dice_roll_ts)))
+      : null;
+
+  // Unified discard/robber-move/steal derivations: read from the
+  // rush-specific fields in rush mode, or from `pending` otherwise --
+  // same underlying shapes (AwaitingDiscard / AwaitingRobberPlacement /
+  // AwaitingSteal), just a different source field per
+  // ClientGameStateView's doc comments. `rushRobberPending` is pulled
+  // into its own local so TypeScript can narrow its `.kind` cleanly
+  // below, instead of narrowing through a chain of optional-chained
+  // property accesses.
+  const rushRobberPending = rushMode ? view?.rush_pending_robber ?? null : null;
+  const myDiscardOwed: number | null =
+    myId == null
+      ? null
+      : rushMode
+        ? view?.rush_pending_discard?.required_counts[myId] ?? null
+        : pending?.kind === "awaiting_discard"
+          ? pending.required_counts[myId] ?? null
+          : null;
+  const myRobberMovePending: boolean = rushMode
+    ? !!rushRobberPending && rushRobberPending.kind === "awaiting_robber_placement" && rushRobberPending.actor === myId
+    : pending?.kind === "awaiting_robber_placement" && pending.actor === myId;
+  const myStealPending = rushMode
+    ? rushRobberPending && rushRobberPending.kind === "awaiting_steal" && rushRobberPending.actor === myId
+      ? rushRobberPending
+      : null
+    : pending && pending.kind === "awaiting_steal" && pending.actor === myId
+      ? pending
+      : null;
+  // Who (if anyone) is currently assigned to handle the robber in rush
+  // mode -- shown to everyone, without blocking anyone else's UI.
+  const rushRobberAssigneeId = rushRobberPending?.actor ?? null;
+
   if (!view) {
     return (
       <div>
@@ -504,8 +605,20 @@ export default function Game() {
         {connectionStatus === "reconnecting" ? <p role="status">Reconnecting...</p> : null}
         {resyncPending ? <p role="status">Resyncing...</p> : null}
         <p>
-          Phase: {view.phase} -- {isMyTurn ? "Your turn" : `${currentPlayerName}'s turn`}
+          Phase: {view.phase}
+          {rushMode
+            ? " -- no turns (rush mode)"
+            : ` -- ${isMyTurn ? "Your turn" : `${currentPlayerName}'s turn`}`}
         </p>
+        {rushMode && rushRollCountdownSeconds != null && (
+          <p>Next auto-roll in {rushRollCountdownSeconds}s</p>
+        )}
+        {rushMode && rushRobberAssigneeId && (
+          <p>
+            {view.players[rushRobberAssigneeId]?.nickname ?? rushRobberAssigneeId} is handling the
+            robber{myRobberMovePending ? " (you)" : ""}.
+          </p>
+        )}
         {(view.last_dice_roll || diceRollEvent) && (
           <DiceRoll
             die1={diceRollEvent?.die1 ?? view.last_dice_roll?.[0] ?? null}
@@ -525,28 +638,30 @@ export default function Game() {
         {view.phase === "setup" && (
           <p>
             {isMySetupTurn
-              ? `Place your ${setupExpectation!.action === "settlement" ? "settlement" : "road"}.`
-              : setupExpectation
-                ? `Waiting for ${view.players[setupExpectation.playerId]?.nickname ?? setupExpectation.playerId} to place.`
-                : "Setup complete."}
+              ? `Place your ${mySetupAction === "settlement" ? "settlement" : "road"}.`
+              : rushMode
+                ? "Setup complete -- waiting for other players to finish placing."
+                : setupExpectation
+                  ? `Waiting for ${view.players[setupExpectation.playerId]?.nickname ?? setupExpectation.playerId} to place.`
+                  : "Setup complete."}
           </p>
         )}
 
-        {view.phase === "roll" && isMyTurn && !pending && (
+        {!rushMode && view.phase === "roll" && isMyTurn && !pending && (
           <button type="button" onClick={() => wsClient.send({ type: "ROLL_DICE", payload: {} })}>
             Roll Dice
           </button>
         )}
 
-        {pending?.kind === "awaiting_discard" && myId && pending.required_counts[myId] != null && (
+        {myId && myDiscardOwed != null && (
           <DiscardPanel
             hand={me?.hand ?? {}}
-            required={pending.required_counts[myId]}
+            required={myDiscardOwed}
             onSubmit={(resources) => wsClient.send({ type: "DISCARD_CARDS", payload: { resources } })}
           />
         )}
 
-        {pending?.kind === "awaiting_robber_placement" && pending.actor === myId && (
+        {myRobberMovePending && (
           <div style={{ border: "2px solid orange", padding: 8, margin: "8px 0" }}>
             <p>Move the robber:</p>
             {view.board.hexes
@@ -563,10 +678,10 @@ export default function Game() {
           </div>
         )}
 
-        {pending?.kind === "awaiting_steal" && pending.actor === myId && (
+        {myStealPending && (
           <div style={{ border: "2px solid orange", padding: 8, margin: "8px 0" }}>
             <p>Steal from:</p>
-            {pending.candidate_targets.map((targetId) => (
+            {myStealPending.candidate_targets.map((targetId) => (
               <button
                 key={targetId}
                 type="button"
@@ -611,15 +726,20 @@ export default function Game() {
                 Build just this 1 road
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                setBuildMode(null);
-                wsClient.send({ type: "END_TURN", payload: {} });
-              }}
-            >
-              End Turn
-            </button>
+            {/* Rush mode has no turns to end -- END_TURN is rejected
+                outright server-side (see rules_engine._validate_end_turn),
+                so the control is simply not shown. */}
+            {!rushMode && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBuildMode(null);
+                  wsClient.send({ type: "END_TURN", payload: {} });
+                }}
+              >
+                End Turn
+              </button>
+            )}
           </div>
         )}
 

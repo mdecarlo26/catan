@@ -125,6 +125,19 @@ PendingAction: TypeAlias = Annotated[
     Field(discriminator="kind"),
 ]
 
+#: Rush-mode-only shape for `GameState.rush_pending_robber`: reuses the
+#: same `AwaitingRobberPlacement` / `AwaitingSteal` models as normal
+#: mode's `pending` (deliberately -- see that field's docstring for why
+#: rush mode can't just store these in `pending` itself), narrowed to the
+#: two kinds relevant to "the robber is currently being handled by one
+#: assigned player" (discard debts have their own dict-shaped field,
+#: `rush_pending_discard`, since -- unlike the robber -- many players can
+#: owe a discard at once).
+RushRobberPending: TypeAlias = Annotated[
+    AwaitingRobberPlacement | AwaitingSteal,
+    Field(discriminator="kind"),
+]
+
 
 class Bank(BaseModel):
     """The shared resource and dev-card supply.
@@ -206,7 +219,70 @@ class GameState(BaseModel):
 
     #: What the game is explicitly waiting on before normal action
     #: validation resumes, or `None` during ordinary play. See
-    #: `PendingAction`.
+    #: `PendingAction`. In rush-mode `Phase.MAIN`, this field is used
+    #: ONLY for `AwaitingTradeResponse` (a `PROPOSE_TRADE` still occupies
+    #: one global slot even in rush mode -- see `rules_engine
+    #: ._validate_propose_trade`'s docstring for that documented scope
+    #: decision) -- discard/robber obligations use the rush-specific
+    #: fields below instead, since unlike normal mode (where `pending`
+    #: being set always means "the whole game is blocked on this"), rush
+    #: mode needs those to coexist with everyone else still playing
+    #: normally. `pending` is never `AwaitingDiscard` /
+    #: `AwaitingRobberPlacement` / `AwaitingSteal` while `settings.rush_mode`
+    #: is on.
     pending: PendingAction | None = None
+
+    #: Rush-mode-only: player_id -> cards still owed, for every player
+    #: currently over `settings.discard_limit` after an auto-rolled 7.
+    #: Shaped exactly like `AwaitingDiscard.required_counts` (reusing
+    #: that model as-is) but tracked independently of `pending` so it can
+    #: coexist with everyone else's ordinary play -- each owing player is
+    #: individually blocked from other actions until they resolve their
+    #: own entry (see `rules_engine._require_rush_unblocked`), but nobody
+    #: else is. `None` when nobody currently owes a rush-mode discard.
+    rush_pending_discard: AwaitingDiscard | None = None
+
+    #: Rush-mode-only: the one player currently assigned to move the
+    #: robber (`AwaitingRobberPlacement`) or, once they've moved it and
+    #: multiple steal candidates exist, to choose a steal target
+    #: (`AwaitingSteal`) -- reusing those same models as normal mode's
+    #: `pending`, just stored here so only *that* player is blocked (see
+    #: `rules_engine._require_rush_unblocked`) instead of the whole game.
+    #: Assigned by rotating through `turn_order` (see
+    #: `rush_robber_turn_index`) each time an auto-roll lands on 7;
+    #: `None` when nobody currently has an unresolved robber obligation.
+    #: A Knight card played in rush mode also routes through this same
+    #: field (assigned to whoever played it) rather than the dice-roll
+    #: rotation -- see `rules_engine._apply_play_dev_card`.
+    rush_pending_robber: RushRobberPending | None = None
+
+    #: Rush-mode-only rotation pointer: the `turn_order` index of the
+    #: player who will be assigned `rush_pending_robber` the *next* time
+    #: an auto-rolled 7 needs a fresh assignment (i.e. `rush_pending_robber`
+    #: is currently `None`). Advanced past disconnected players only at
+    #: resolution time (`rules_engine._next_rush_robber_mover`), never
+    #: baked into the stored index itself, so a player who reconnects
+    #: later still gets their fair turn in the rotation. If a 7 lands
+    #: while a previous robber-move is still unresolved, `rules_engine`
+    #: does not create a second concurrent assignment for the one
+    #: physical robber (see `_apply_roll_dice`'s rush branch / the
+    #: module's dedicated comment) -- it only advances this pointer, so
+    #: the same player isn't unfairly assigned twice in a row once the
+    #: current one finally resolves. This is a deliberate, documented
+    #: "queue by skipping" tradeoff rather than a real per-player FIFO
+    #: queue of pending robber-moves.
+    rush_robber_turn_index: int = 0
+
+    #: Unix timestamp (seconds) of the most recent dice roll -- set by
+    #: both the client-invoked `ROLL_DICE` action and rush mode's
+    #: system-driven `apply_rush_auto_roll` (and, for rush mode, primed
+    #: to "now" the moment `Phase.MAIN` begins -- see `RushModeSetup
+    #: .on_setup_complete`). Exposed on `ClientGameStateView` so clients
+    #: can render a "next auto-roll in Ns" countdown from
+    #: `settings.rush_roll_interval_seconds` without needing their own
+    #: clock synced to a server-authoritative roll schedule. `None`
+    #: before the first roll of a non-rush game (rush mode always primes
+    #: it at setup completion, before any roll has actually happened).
+    last_dice_roll_ts: float | None = None
 
     action_log: list[ActionLogEntry] = Field(default_factory=list)

@@ -81,6 +81,21 @@ ALLOWED_ACTIONS: dict[Phase, frozenset[ActionType]] = {
             ActionType.RESPOND_TRADE,
             ActionType.PLAY_NUKE,
             ActionType.END_TURN,
+            # Only ever actually reachable in rush mode: `settings.rush_mode`
+            # never leaves `Phase.MAIN` after setup (there's no ROBBER_MOVE/
+            # ROBBER_DISCARD phase transition -- see `rules_engine`'s rush
+            # helpers), so these three have to be legal here for that mode
+            # to ever use them. Normal mode's own use of them only ever
+            # happens from `Phase.ROBBER_DISCARD`/`Phase.ROBBER_MOVE`
+            # (below), never while `phase == MAIN`, so adding them here is
+            # a no-op for normal mode -- the rule-specific validators
+            # (`_validate_discard_cards`/`_validate_move_robber`/
+            # `_validate_steal_resource`) still reject them via
+            # `GameState.pending` being the wrong shape (or `None`) outside
+            # that context.
+            ActionType.DISCARD_CARDS,
+            ActionType.MOVE_ROBBER,
+            ActionType.STEAL_RESOURCE,
             ActionType.LEAVE_ROOM,
         }
     ),

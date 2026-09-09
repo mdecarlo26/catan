@@ -138,6 +138,17 @@ export type PendingAction =
   | AwaitingSteal
   | AwaitingTradeResponse;
 
+/**
+ * Rush-mode-only shape for ClientGameStateView.rush_pending_robber --
+ * mirrors backend/app/game/state.py's RushRobberPending: reuses
+ * AwaitingRobberPlacement / AwaitingSteal (same models `pending` uses in
+ * normal mode), just conveyed on a separate field since rush mode needs
+ * it to coexist with everyone else's ordinary play instead of blocking
+ * the whole game. See ClientGameStateView.rush_pending_robber's doc
+ * comment.
+ */
+export type RushRobberPending = AwaitingRobberPlacement | AwaitingSteal;
+
 // ---------------------------------------------------------------------
 // Settings (mirrors settings_schema.py)
 // ---------------------------------------------------------------------
@@ -149,7 +160,17 @@ export interface GameSettings {
   victory_points_target: number;
   /** Named key into the board layout registry (e.g. "standard", "random", "fixed"). */
   board_layout: string;
+  /**
+   * No "current player": every seated player may build/trade/buy or play
+   * dev cards at any time (gated only by their own resources/legality),
+   * dice roll automatically every rush_roll_interval_seconds instead of
+   * via a client ROLL_DICE action (rejected while this is on), and setup
+   * placement is simultaneous rather than snake-drafted. Always makes
+   * special_build_phase inapplicable regardless of its own value.
+   */
   rush_mode: boolean;
+  /** Seconds between automatic dice rolls in rush mode. Default 15; ignored unless rush_mode is on. */
+  rush_roll_interval_seconds: number;
   nuke_mode: boolean;
   /** null = "unset, derive from player_count >= 5"; a concrete host override otherwise. */
   special_build_phase: boolean | null;
@@ -431,6 +452,22 @@ export interface ClientGameStateView {
    * special build turn is it" to the client.
    */
   special_build_queue: PlayerId[];
+  /**
+   * Rush-mode-only concurrent obligations -- mirror
+   * GameState.rush_pending_discard / rush_pending_robber 1:1. `null` for
+   * both outside rush mode, or whenever nobody currently owes either.
+   * Render the discard/robber-move UI from these (instead of `pending`)
+   * whenever settings.rush_mode is on; rush_pending_robber.actor is
+   * "who's currently handling the robber" without blocking anyone else.
+   */
+  rush_pending_discard: AwaitingDiscard | null;
+  rush_pending_robber: RushRobberPending | null;
+  /**
+   * Unix timestamp (seconds) of the most recent dice roll. Combined with
+   * settings.rush_roll_interval_seconds, drives a rush-mode "next
+   * auto-roll in Ns" countdown.
+   */
+  last_dice_roll_ts: number | null;
   viewer_player_id: PlayerId;
 }
 
@@ -476,7 +513,8 @@ export interface StateSnapshotPayload {
 }
 
 export interface DiceRolledPayload {
-  player_id: PlayerId;
+  /** null for a rush-mode auto-roll (system-driven, nobody "rolled" it). */
+  player_id: PlayerId | null;
   die1: number;
   die2: number;
   total: number;

@@ -81,7 +81,25 @@ that synthesized action produced. A stall while a robber
 discard/placement/steal is pending is deliberately left alone -- those
 require a specific player's own choice (which cards to discard, whom to
 rob) that can't be safely auto-resolved without a real "auto-play"
-policy, which is out of scope here.
+policy, which is out of scope here. This entire loop is a no-op while
+`settings.rush_mode` is on -- rush mode has no "current player" for it to
+stall/force-advance (see `_force_advance_stalled_turn`'s early return).
+
+Rush-mode auto-roll timer
+--------------------------
+`_rush_roll_loop` is a second per-room background `asyncio.Task`,
+started/cancelled alongside `_turn_timer_loop`, that mirrors its exact
+shape for a different job: once a rush-mode game reaches `Phase.MAIN`, it
+polls `app.game.rules.rush_timer.should_auto_roll` against
+`settings.rush_roll_interval_seconds` and that room's most recent roll
+timestamp, and on a `True` result calls
+`app.game.rules_engine.apply_rush_auto_roll` (never a synthesized client
+action -- there's no "actor" for a system-driven roll) and broadcasts the
+resulting events plus a fresh snapshot round, exactly like any other
+gameplay action. For a non-rush-mode room, or a rush-mode room still in
+`Phase.SETUP`, the loop just keeps resetting its own baseline timestamp
+so the first real auto-roll (once `Phase.MAIN` begins) always waits a
+full interval rather than firing immediately.
 """
 
 from __future__ import annotations
@@ -108,7 +126,7 @@ from app.game.actions import (
     UpdateSettingsPayload,
 )
 from app.game.players import PlayerState, ResourceType
-from app.game.rules import turn_timer
+from app.game.rules import rush_timer, turn_timer
 from app.game.rules_engine import RuleViolation
 from app.game.state import Bank, GameState, Phase
 from app.protocol.events import (
@@ -181,6 +199,14 @@ _timer_tasks: dict[str, asyncio.Task] = {}
 #: room_code -> wall-clock time.time() of the last successful gameplay
 #: (or lifecycle) action in that room. Drives the turn timer.
 _last_action_ts: dict[str, float] = {}
+
+#: room_code -> background rush-mode auto-roll task. See the module
+#: docstring's "Rush-mode auto-roll timer" section.
+_rush_roll_tasks: dict[str, asyncio.Task] = {}
+#: room_code -> wall-clock time.time() of that room's most recent
+#: rush-mode auto-roll, or (while not yet in rush-mode Phase.MAIN) just a
+#: repeatedly-reset "now" baseline. Drives `rush_timer.should_auto_roll`.
+_rush_last_roll_ts: dict[str, float] = {}
 
 
 def _now() -> float:
@@ -523,6 +549,7 @@ async def _handle_start_game(websocket: WebSocket, room: Room, conn: _ConnState)
     await _broadcast_snapshots(room, state)
 
     _timer_tasks[room.room_code] = asyncio.create_task(_turn_timer_loop(room))
+    _rush_roll_tasks[room.room_code] = asyncio.create_task(_rush_roll_loop(room))
     return False
 
 
@@ -546,6 +573,7 @@ async def _handle_gameplay_action(websocket: WebSocket, room: Room, conn: _ConnS
     if state.phase == Phase.GAME_OVER:
         room.mark_finished()
         _cancel_timer(room.room_code)
+        _cancel_rush_roll(room.room_code)
 
     return False
 
@@ -587,7 +615,23 @@ def _cancel_timer(room_code: str) -> None:
     _last_action_ts.pop(room_code, None)
 
 
+def _cancel_rush_roll(room_code: str) -> None:
+    task = _rush_roll_tasks.pop(room_code, None)
+    if task is not None:
+        task.cancel()
+    _rush_last_roll_ts.pop(room_code, None)
+
+
 async def _force_advance_stalled_turn(room: Room, state: GameState) -> None:
+    if state.settings.rush_mode:
+        # Rush mode has no "current player" / turn to stall -- every
+        # seated player acts independently at all times (see
+        # rules_engine._require_actionable_player), so turn_timer_seconds
+        # simply doesn't apply. (Forcing an END_TURN here would also just
+        # raise RuleViolation now that rush mode rejects it outright --
+        # see _validate_end_turn -- but this early return avoids that
+        # wasted round-trip and states the intent directly.)
+        return
     if state.phase == Phase.SPECIAL_BUILD:
         # During the special build phase, the player who may act is
         # whoever's up in the queue, not `turn_order[current_player_index]`
@@ -645,6 +689,56 @@ async def _turn_timer_loop(room: Room) -> None:
             last_ts = _last_action_ts.get(room_code, _now())
             if turn_timer.should_force_end_turn(state.settings.turn_timer_seconds, last_ts, _now()):
                 await _force_advance_stalled_turn(room, state)
+    except asyncio.CancelledError:
+        return
+
+
+# ---------------------------------------------------------------------
+# Rush-mode auto-roll timer
+# ---------------------------------------------------------------------
+
+
+async def _fire_rush_auto_roll(room: Room, state: GameState) -> None:
+    events = rules_engine.apply_rush_auto_roll(state)
+    _rush_last_roll_ts[room.room_code] = _now()
+    _touch(room.room_code)
+    await _dispatch_rule_events(room, events)
+    await _broadcast_snapshots(room, state)
+
+    if state.phase == Phase.GAME_OVER:
+        room.mark_finished()
+        _cancel_timer(room.room_code)
+        _cancel_rush_roll(room.room_code)
+
+
+async def _rush_roll_loop(room: Room) -> None:
+    """Per-room background task, started/cancelled alongside
+    `_turn_timer_loop` -- see the module docstring's "Rush-mode auto-roll
+    timer" section for the full rationale.
+    """
+    room_code = room.room_code
+    try:
+        while True:
+            await asyncio.sleep(app_settings.turn_timer_check_interval_seconds)
+
+            if room_manager.get(room_code) is not room:
+                return  # room was evicted out from under us
+
+            state = room.game_state
+            if state is None or state.phase == Phase.GAME_OVER:
+                return
+
+            if not state.settings.rush_mode or state.phase != Phase.MAIN:
+                # Not (yet) eligible to auto-roll -- non-rush game, or a
+                # rush-mode game still in Phase.SETUP. Keep resetting the
+                # baseline so the first real auto-roll after MAIN begins
+                # waits a full interval rather than firing immediately.
+                _rush_last_roll_ts[room_code] = _now()
+                continue
+
+            last_ts = _rush_last_roll_ts.get(room_code, _now())
+            if rush_timer.should_auto_roll(state.settings.rush_roll_interval_seconds, last_ts, _now()):
+                await _fire_rush_auto_roll(room, state)
     except asyncio.CancelledError:
         return
 

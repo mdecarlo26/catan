@@ -48,7 +48,7 @@ from app.game.board import (
 )
 from app.game.players import DevCardType, ResourceHand, ResourceType
 from app.game.settings_schema import GameSettings
-from app.game.state import PendingAction, Phase
+from app.game.state import AwaitingDiscard, PendingAction, Phase, RushRobberPending
 
 
 class EventType(str, Enum):
@@ -194,6 +194,26 @@ class ClientGameStateView(BaseModel):
     #: what conveys "whose special build turn is it" to clients.
     special_build_queue: list[PlayerId] = Field(default_factory=list)
 
+    #: Rush-mode-only concurrent obligations -- mirror
+    #: `app.game.state.GameState.rush_pending_discard` /
+    #: `rush_pending_robber` 1:1 (same models, safe to expose as-is: see
+    #: `app.game.serialization`'s "what is not masked here" note for why
+    #: `pending`'s equivalent sub-shapes are already public-safe). `None`
+    #: for both outside rush mode, or whenever nobody currently owes
+    #: either. The frontend renders the discard/robber-move UI from these
+    #: (instead of `pending`) whenever `settings.rush_mode` is on, and can
+    #: show "who's currently handling the robber" from
+    #: `rush_pending_robber.actor` without that blocking anyone else's UI.
+    rush_pending_discard: AwaitingDiscard | None = None
+    rush_pending_robber: RushRobberPending | None = None
+
+    #: Unix timestamp (seconds) of the most recent dice roll -- mirrors
+    #: `app.game.state.GameState.last_dice_roll_ts`. Combined with
+    #: `settings.rush_roll_interval_seconds`, lets a rush-mode client
+    #: render a live "next auto-roll in Ns" countdown without needing a
+    #: server-push tick every second.
+    last_dice_roll_ts: float | None = None
+
     #: Whose masked view this is -- i.e. which player's `hand` /
     #: `dev_cards` are unmasked in `players` above.
     viewer_player_id: PlayerId
@@ -274,7 +294,10 @@ class StateSnapshotPayload(BaseModel):
 
 
 class DiceRolledPayload(BaseModel):
-    player_id: PlayerId
+    #: `None` for a rush-mode auto-roll (system-driven, nobody "rolled"
+    #: it) -- see `app.game.rules_engine.apply_rush_auto_roll`. Always
+    #: populated for a normal-mode, client-invoked `ROLL_DICE`.
+    player_id: PlayerId | None
     die1: int
     die2: int
     total: int

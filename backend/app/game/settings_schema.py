@@ -43,12 +43,27 @@ class GameSettings(BaseModel):
     #: time, not by this field's type.
     board_layout: str = "random"
 
-    #: Enables an alternate initial-setup/pacing strategy. Selected via
-    #: the `SETUP_STRATEGIES` registry in `app.game.rules.setup_strategies`
-    #: (`RushModeSetup` vs. the default `SnakeDraftSetup`). Real gameplay
-    #: behavior is deliberately deferred per the plan -- this flag only
-    #: selects which strategy object is used.
+    #: Replaces the entire turn-based MAIN-phase model with a concurrent
+    #: one: no "current player" -- every seated player may build/trade/
+    #: buy or play dev cards independently at any time (gated only by
+    #: their own resources/legality), dice roll automatically on a fixed
+    #: interval (`rush_roll_interval_seconds`) instead of via a client
+    #: `ROLL_DICE` action (rejected outright while this is on), and
+    #: initial setup placement (`app.game.rules.setup_strategies
+    #: .RushModeSetup`) is simultaneous rather than snake-drafted. See
+    #: `rules_engine`'s rush-mode helpers (`_require_actionable_player`,
+    #: `apply_rush_auto_roll`, `GameState.rush_pending_discard` /
+    #: `rush_pending_robber` / `rush_robber_turn_index`) for the full
+    #: mechanics. `special_build_phase` is always inapplicable while this
+    #: is on -- see `rules_engine._effective_special_build_phase`.
     rush_mode: bool = False
+
+    #: Seconds between automatic dice rolls while `rush_mode` is on (and
+    #: the game has reached `Phase.MAIN`). Ignored entirely otherwise.
+    #: See `app.game.rules.rush_timer.should_auto_roll`, wired up by
+    #: `app.api.websocket`'s per-room rush-roll background task (mirrors
+    #: the `turn_timer_seconds` / stalled-turn-timer pattern).
+    rush_roll_interval_seconds: int = Field(default=15, ge=5)
 
     #: Enables the custom "nuke" house rule (`PLAY_NUKE` action). See the
     #: plan's "Nuke Mode" section and `app.game.rules.nuke_mode`.
@@ -141,9 +156,21 @@ SETTINGS_REGISTRY: list[SettingFieldMeta] = [
         type=SettingFieldType.BOOL,
         default=False,
         description=(
-            "Alternate, faster initial-setup strategy. Exact behavior is "
-            "still being designed; currently a placeholder toggle."
+            "No turns: everyone may build/trade/play dev cards at any "
+            "time, dice roll automatically, and setup placement is "
+            "simultaneous. Disables special_build_phase."
         ),
+    ),
+    SettingFieldMeta(
+        key="rush_roll_interval_seconds",
+        type=SettingFieldType.INT,
+        default=15,
+        description=(
+            "Seconds between automatic dice rolls in rush mode. "
+            "Ignored unless rush_mode is on."
+        ),
+        min_value=5,
+        max_value=None,
     ),
     SettingFieldMeta(
         key="nuke_mode",
