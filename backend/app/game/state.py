@@ -39,6 +39,15 @@ class Phase(str, Enum):
     ROBBER_MOVE = "robber_move"
     #: Normal turn actions: build, trade, buy/play dev cards, end turn.
     MAIN = "main"
+    #: Official 5-6p expansion's Special Build Phase: entered after the
+    #: current player ends their normal `MAIN` turn, when the effective
+    #: `settings.special_build_phase` is on (see
+    #: `GameSettings.special_build_phase`'s docstring). Every other
+    #: player, in turn order starting right after the player who just
+    #: went, gets one build-only mini-turn (trade + build, no dice, no
+    #: dev cards) before `current_player_index` actually advances. See
+    #: `GameState.special_build_queue`.
+    SPECIAL_BUILD = "special_build"
     #: `victory_points_target` reached; game frozen for the post-game
     #: summary until the room's TTL sweep evicts it.
     GAME_OVER = "game_over"
@@ -181,6 +190,19 @@ class GameState(BaseModel):
 
     longest_road_holder: PlayerId | None = None
     largest_army_holder: PlayerId | None = None
+
+    #: While `phase == Phase.SPECIAL_BUILD`: the players who still owe a
+    #: special-build mini-turn this round, in the order they'll take it.
+    #: `special_build_queue[0]` is whoever may currently act (build/trade,
+    #: then submit `END_TURN` to mean "done with my special turn" and
+    #: advance to the next entry). Empty whenever `phase !=
+    #: Phase.SPECIAL_BUILD`. `current_player_index` is deliberately left
+    #: pointing at the player who just finished their normal turn for the
+    #: whole round (it only advances to the real next player once this
+    #: queue empties) -- clients render "whose special-build turn is it"
+    #: from this field, not from `current_player_index`, while `phase ==
+    #: Phase.SPECIAL_BUILD`.
+    special_build_queue: list[PlayerId] = Field(default_factory=list)
 
     #: What the game is explicitly waiting on before normal action
     #: validation resumes, or `None` during ordinary play. See

@@ -588,11 +588,23 @@ def _cancel_timer(room_code: str) -> None:
 
 
 async def _force_advance_stalled_turn(room: Room, state: GameState) -> None:
-    current = state.turn_order[state.current_player_index]
-
-    if state.phase == Phase.ROLL:
-        forced: ClientAction = RollDiceAction()
+    if state.phase == Phase.SPECIAL_BUILD:
+        # During the special build phase, the player who may act is
+        # whoever's up in the queue, not `turn_order[current_player_index]`
+        # (that index is deliberately left pointing at whoever just
+        # finished their normal turn for the whole round -- see
+        # `GameState.special_build_queue`'s docstring). A stalled special
+        # build turn is always safely auto-playable as "done" (END_TURN
+        # here just means "pass on my special build turn").
+        if not state.special_build_queue:
+            return
+        current = state.special_build_queue[0]
+        forced: ClientAction = EndTurnAction()
+    elif state.phase == Phase.ROLL:
+        current = state.turn_order[state.current_player_index]
+        forced = RollDiceAction()
     elif state.phase == Phase.MAIN and state.pending is None:
+        current = state.turn_order[state.current_player_index]
         forced = EndTurnAction()
     else:
         # A pending discard/robber-placement/steal needs a specific

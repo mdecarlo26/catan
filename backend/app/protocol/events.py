@@ -186,6 +186,14 @@ class ClientGameStateView(BaseModel):
     largest_army_holder: PlayerId | None
     pending: PendingAction | None
 
+    #: While `phase == "special_build"`: the players who still owe a
+    #: special-build mini-turn this round, in the order they'll take it --
+    #: `special_build_queue[0]` is whoever may currently act. Empty
+    #: otherwise. Mirrors `app.game.state.GameState.special_build_queue`;
+    #: see its docstring for why this (not `current_player_index`) is
+    #: what conveys "whose special build turn is it" to clients.
+    special_build_queue: list[PlayerId] = Field(default_factory=list)
+
     #: Whose masked view this is -- i.e. which player's `hand` /
     #: `dev_cards` are unmasked in `players` above.
     viewer_player_id: PlayerId

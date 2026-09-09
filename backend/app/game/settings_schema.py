@@ -55,8 +55,10 @@ class GameSettings(BaseModel):
     nuke_mode: bool = False
 
     #: Enables the extra build-only round between turns from the official
-    #: 5-6 player expansion. `None` means "unset": the host has not
-    #: explicitly chosen, so the effective value is derived as
+    #: 5-6 player expansion (see `app.game.state.Phase.SPECIAL_BUILD` and
+    #: `rules_engine._apply_end_turn`). `None` means "unset": the host has
+    #: not explicitly chosen, so the effective value -- computed by
+    #: `rules_engine._effective_special_build_phase` -- is derived as
     #: `player_count >= 5` at game-start time. Once the host sets this
     #: explicitly via `UPDATE_SETTINGS`, it becomes a concrete override
     #: that sticks regardless of `player_count`.

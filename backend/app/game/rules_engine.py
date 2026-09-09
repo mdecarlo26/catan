@@ -182,6 +182,28 @@ def _require_current_player(state: GameState, actor_id: PlayerId) -> None:
         raise RuleViolation("not_your_turn", "It is not your turn.")
 
 
+def _effective_special_build_phase(settings) -> bool:
+    """The concrete on/off value of `settings.special_build_phase`: the
+    explicit host override if set, else `player_count >= 5` per the
+    official 5-6p expansion default. See that field's docstring.
+    """
+    if settings.special_build_phase is not None:
+        return settings.special_build_phase
+    return settings.player_count >= 5
+
+
+def _require_actionable_player(state: GameState, actor_id: PlayerId) -> None:
+    """Whoever may currently spend resources / build right now: the
+    normal current player during `Phase.MAIN`, or whoever is up in
+    `GameState.special_build_queue` during `Phase.SPECIAL_BUILD`.
+    """
+    if state.phase == Phase.SPECIAL_BUILD:
+        if not state.special_build_queue or actor_id != state.special_build_queue[0]:
+            raise RuleViolation("not_your_turn", "It is not your special build turn.")
+        return
+    _require_current_player(state, actor_id)
+
+
 def _edges_incident_to_vertex(board, vertex_id: VertexId) -> list[EdgeId]:
     """Edges touching `vertex_id`, derived only from the frozen `board.py`
     signatures (there's no direct "edges of a vertex" function): for each
@@ -412,7 +434,7 @@ def _validate_build_settlement(state: GameState, actor_id: PlayerId, payload: Bu
     if state.phase == Phase.SETUP:
         _validate_setup_turn(state, actor_id, ActionType.BUILD_SETTLEMENT)
     else:
-        _require_current_player(state, actor_id)
+        _require_actionable_player(state, actor_id)
         if not _has_resources(state.players[actor_id].hand, SETTLEMENT_COST):
             raise RuleViolation("insufficient_resources", "Not enough resources for a settlement.")
 
@@ -422,7 +444,7 @@ def _validate_build_settlement(state: GameState, actor_id: PlayerId, payload: Bu
 
     _vertex_free_and_far_enough(state.board, payload.vertex_id)
 
-    if state.phase == Phase.MAIN and not _player_has_connection_to_vertex(
+    if state.phase in (Phase.MAIN, Phase.SPECIAL_BUILD) and not _player_has_connection_to_vertex(
         state.board, actor_id, payload.vertex_id
     ):
         raise RuleViolation("not_connected", "Settlement must connect to your own road network.")
@@ -508,7 +530,7 @@ def _validate_build_road(state: GameState, actor_id: PlayerId, payload: BuildRoa
     if state.phase == Phase.SETUP:
         _validate_setup_turn(state, actor_id, ActionType.BUILD_ROAD)
     else:
-        _require_current_player(state, actor_id)
+        _require_actionable_player(state, actor_id)
         if not _has_resources(state.players[actor_id].hand, ROAD_COST):
             raise RuleViolation("insufficient_resources", "Not enough resources for a road.")
     _validate_road_slot(state, actor_id, payload.edge_id)
@@ -526,7 +548,7 @@ def _apply_build_road(state: GameState, actor_id: PlayerId, payload: BuildRoadPa
 
 
 def _validate_build_city(state: GameState, actor_id: PlayerId, payload: BuildCityPayload) -> None:
-    _require_current_player(state, actor_id)
+    _require_actionable_player(state, actor_id)
     player = state.players[actor_id]
     if player.cities_remaining <= 0:
         raise RuleViolation("no_cities_left", "No city pieces left to build.")
@@ -559,7 +581,7 @@ def _apply_build_city(state: GameState, actor_id: PlayerId, payload: BuildCityPa
 
 
 def _validate_buy_dev_card(state: GameState, actor_id: PlayerId, payload) -> None:
-    _require_current_player(state, actor_id)
+    _require_actionable_player(state, actor_id)
     if not state.bank.dev_card_pile:
         raise RuleViolation("dev_card_pile_empty", "No development cards left in the bank.")
     if not _has_resources(state.players[actor_id].hand, DEV_CARD_COST):
@@ -702,7 +724,7 @@ def _validate_trade_shape(
 
 
 def _validate_bank_trade(state: GameState, actor_id: PlayerId, payload: BankTradePayload) -> None:
-    _require_current_player(state, actor_id)
+    _require_actionable_player(state, actor_id)
     rate_for = {resource: BANK_TRADE_RATE for resource in ResourceType}
     _validate_trade_shape(payload.offered, payload.requested, rate_for)
     if not _has_resources(state.players[actor_id].hand, payload.offered):
@@ -739,7 +761,7 @@ def _best_port_rate(board, player_id: PlayerId, resource: ResourceType) -> int:
 
 
 def _validate_port_trade(state: GameState, actor_id: PlayerId, payload: PortTradePayload) -> None:
-    _require_current_player(state, actor_id)
+    _require_actionable_player(state, actor_id)
     rate_for = {
         resource: _best_port_rate(state.board, actor_id, resource) for resource in ResourceType
     }
@@ -760,7 +782,7 @@ def _apply_port_trade(state: GameState, actor_id: PlayerId, payload: PortTradePa
 
 
 def _validate_propose_trade(state: GameState, actor_id: PlayerId, payload: ProposeTradePayload) -> None:
-    _require_current_player(state, actor_id)
+    _require_actionable_player(state, actor_id)
     if state.pending is not None:
         raise RuleViolation("action_pending", "Another action is already pending.")
     if not any(amount > 0 for amount in payload.offered.values()):
@@ -1046,6 +1068,13 @@ def _apply_play_nuke(state: GameState, actor_id: PlayerId, payload: PlayNukePayl
 
 
 def _validate_end_turn(state: GameState, actor_id: PlayerId, payload) -> None:
+    if state.phase == Phase.SPECIAL_BUILD:
+        # Reused for "I'm done with my special build turn" -- its meaning
+        # is unambiguous from phase context. Only the player currently up
+        # in the queue may submit it.
+        if not state.special_build_queue or actor_id != state.special_build_queue[0]:
+            raise RuleViolation("not_your_turn", "It is not your special build turn.")
+        return
     _require_current_player(state, actor_id)
     if isinstance(state.pending, (AwaitingDiscard, AwaitingRobberPlacement, AwaitingSteal)):
         raise RuleViolation(
@@ -1055,9 +1084,36 @@ def _validate_end_turn(state: GameState, actor_id: PlayerId, payload) -> None:
 
 def _apply_end_turn(state: GameState, actor_id: PlayerId, payload) -> list[RuleEvent]:
     events = _cancel_pending_trade_if_any(state)
-
     player = state.players[actor_id]
     dev_cards.fold_bought_this_turn_into_hand(player)
+
+    if state.phase == Phase.SPECIAL_BUILD:
+        # `actor_id` is guaranteed by `_validate_end_turn` to be
+        # `special_build_queue[0]`: pop them and either move on to the
+        # next player in the queue or, once it's exhausted, perform the
+        # real turn advance that was deferred when the special build
+        # round started (see the MAIN branch below).
+        state.special_build_queue.pop(0)
+        if not state.special_build_queue:
+            state.current_player_index = (state.current_player_index + 1) % len(state.turn_order)
+            state.phase = Phase.ROLL
+        return events
+
+    # Ending a normal full turn. Per the official 5-6p expansion, when
+    # the effective special_build_phase setting is on (see
+    # `_effective_special_build_phase`) and there's more than one player,
+    # don't advance the turn yet -- give every other player, in turn
+    # order starting right after `actor_id`, a build-only mini-turn
+    # first. `current_player_index` is deliberately left unchanged for
+    # the whole special build round; see `GameState.special_build_queue`.
+    if _effective_special_build_phase(state.settings) and len(state.turn_order) > 1:
+        player_count = len(state.turn_order)
+        state.special_build_queue = [
+            state.turn_order[(state.current_player_index + 1 + offset) % player_count]
+            for offset in range(player_count - 1)
+        ]
+        state.phase = Phase.SPECIAL_BUILD
+        return events
 
     state.current_player_index = (state.current_player_index + 1) % len(state.turn_order)
     state.phase = Phase.ROLL
