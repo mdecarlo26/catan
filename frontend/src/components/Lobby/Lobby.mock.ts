@@ -67,6 +67,21 @@ export const SETTINGS_REGISTRY_MOCK: LobbySettingFieldMeta[] = [
     min_value: 1,
     max_value: null,
   },
+  {
+    key: "friendly_robber",
+    type: "bool",
+    default: false,
+    description:
+      "Friendly robber: moving the robber still blocks a hex's production, but never steals a card.",
+  },
+  {
+    key: "turn_timer_seconds",
+    type: "int",
+    default: 120,
+    description: "Seconds a turn may sit idle before it's automatically ended. 0 disables the timer.",
+    min_value: 0,
+    max_value: null,
+  },
 ];
 
 export const MOCK_GAME_SETTINGS: GameSettings = {
@@ -77,6 +92,8 @@ export const MOCK_GAME_SETTINGS: GameSettings = {
   nuke_mode: false,
   special_build_phase: null,
   discard_limit: 7,
+  friendly_robber: false,
+  turn_timer_seconds: 120,
 };
 
 export const MOCK_VIEWER_PLAYER_ID: PlayerId = "player-1";

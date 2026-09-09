@@ -14,3 +14,5 @@ export type { EdgeSegmentOptions, EdgeRoadInfo } from "./EdgeSegment";
 export * from "./boardInteraction";
 export * from "./hexMath";
 export * from "./theme";
+export * from "./boardGraph";
+export * from "./legality";

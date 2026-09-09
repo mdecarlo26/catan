@@ -28,6 +28,7 @@ import type {
   TradeOfferedPayload,
 } from "../types/protocol";
 import type { ConnectionStatus, ResyncNeededDetail, WsClient } from "../api/wsClient";
+import { saveSession } from "../api/session";
 
 const MAX_LOG_ENTRIES = 100;
 
@@ -41,6 +42,15 @@ export interface GameStoreState {
   connectionStatus: ConnectionStatus;
   /** Set whenever wsClient detects a seq gap; cleared once a fresh snapshot lands. */
   resyncPending: ResyncNeededDetail | null;
+
+  /**
+   * This connection's own player_id, known as soon as either a stored
+   * session is loaded (host / reconnect) or SESSION_ESTABLISHED arrives
+   * (a freshly-joined non-host player). Prefer `view.viewer_player_id`
+   * once a game exists -- this exists for the lobby-phase window before
+   * any ClientGameStateView is available.
+   */
+  myPlayerId: string | null;
 
   /** Lobby-phase room summary (players/settings/host), from ROOM_STATE. */
   roomState: RoomStatePayload | null;
@@ -61,6 +71,7 @@ export interface GameStoreState {
 
   setConnectionStatus: (status: ConnectionStatus) => void;
   setResyncPending: (detail: ResyncNeededDetail | null) => void;
+  setMyPlayerId: (playerId: string | null) => void;
   applyServerEvent: (event: ServerEvent) => void;
   reset: () => void;
 }
@@ -71,6 +82,7 @@ function initialState(): Pick<
   GameStoreState,
   | "connectionStatus"
   | "resyncPending"
+  | "myPlayerId"
   | "roomState"
   | "view"
   | "discardRequired"
@@ -82,6 +94,7 @@ function initialState(): Pick<
   return {
     connectionStatus: "disconnected",
     resyncPending: null,
+    myPlayerId: null,
     roomState: null,
     view: null,
     discardRequired: null,
@@ -104,6 +117,8 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
 
   setResyncPending: (detail) => set({ resyncPending: detail }),
 
+  setMyPlayerId: (playerId) => set({ myPlayerId: playerId }),
+
   reset: () => set(initialState()),
 
   applyServerEvent: (event) => {
@@ -111,6 +126,16 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
     const withLog = (text: string) => appendLog(log, text, event.ts);
 
     switch (event.type) {
+      case "SESSION_ESTABLISHED": {
+        saveSession({
+          room_code: event.payload.room_code,
+          player_id: event.payload.player_id,
+          token: event.payload.token,
+        });
+        set({ myPlayerId: event.payload.player_id, log: withLog("Session established.") });
+        break;
+      }
+
       case "ROOM_STATE": {
         set({ roomState: event.payload, log: withLog("Room state updated.") });
         break;
@@ -279,6 +304,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
 }));
 
 const SERVER_EVENT_TYPES: ServerEvent["type"][] = [
+  "SESSION_ESTABLISHED",
   "ROOM_STATE",
   "PLAYER_JOINED",
   "PLAYER_LEFT",

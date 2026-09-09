@@ -154,6 +154,10 @@ export interface GameSettings {
   special_build_phase: boolean | null;
   /** Default 7. */
   discard_limit: number;
+  /** Friendly robber: still blocks production, never steals. Default false. */
+  friendly_robber: boolean;
+  /** Seconds a turn may sit idle before it's auto-ended. 0 disables the timer. Default 120. */
+  turn_timer_seconds: number;
 }
 
 export type SettingFieldType = "int" | "bool" | "string";
@@ -305,6 +309,7 @@ export type ClientAction =
 // ---------------------------------------------------------------------
 
 export type EventType =
+  | "SESSION_ESTABLISHED"
   | "ROOM_STATE"
   | "PLAYER_JOINED"
   | "PLAYER_LEFT"
@@ -328,6 +333,20 @@ export type EventType =
   | "TURN_TIMER_EXPIRED"
   | "GAME_OVER"
   | "ERROR";
+
+/**
+ * Sent to exactly one socket, immediately after a successful JOIN_ROOM
+ * handshake: the freshly minted player_id and reconnect token that
+ * connection must persist client-side (via session.ts's saveSession) to
+ * reconnect via /ws/{room_code}?token=... later. Not sent to the host
+ * (their first connection is a reconnect using the token POST /api/rooms
+ * already issued) -- this closes the gap for every other joining player.
+ */
+export interface SessionEstablishedPayload {
+  player_id: PlayerId;
+  token: string;
+  room_code: string;
+}
 
 export interface PlayerSummary {
   player_id: PlayerId;
@@ -534,6 +553,10 @@ interface EventEnvelopeBase {
 
 /** {type, payload, seq, ts} tagged union of every Server -> Client message. */
 export type ServerEvent =
+  | (EventEnvelopeBase & {
+      type: "SESSION_ESTABLISHED";
+      payload: SessionEstablishedPayload;
+    })
   | (EventEnvelopeBase & { type: "ROOM_STATE"; payload: RoomStatePayload })
   | (EventEnvelopeBase & { type: "PLAYER_JOINED"; payload: PlayerJoinedPayload })
   | (EventEnvelopeBase & { type: "PLAYER_LEFT"; payload: PlayerLeftPayload })
