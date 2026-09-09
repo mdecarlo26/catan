@@ -102,6 +102,7 @@ export type Phase =
   | "robber_discard"
   | "robber_move"
   | "main"
+  | "special_build"
   | "game_over";
 
 export interface AwaitingDiscard {
@@ -422,6 +423,14 @@ export interface ClientGameStateView {
   longest_road_holder: PlayerId | null;
   largest_army_holder: PlayerId | null;
   pending: PendingAction | null;
+  /**
+   * While phase === "special_build": players who still owe a
+   * special-build mini-turn this round, in the order they'll take it --
+   * special_build_queue[0] is whoever may currently act. Empty
+   * otherwise. This (not current_player_index) is what conveys "whose
+   * special build turn is it" to the client.
+   */
+  special_build_queue: PlayerId[];
   viewer_player_id: PlayerId;
 }
 

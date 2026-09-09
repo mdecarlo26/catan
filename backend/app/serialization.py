@@ -120,5 +120,6 @@ def to_client_view(state: GameState, viewer_player_id: str) -> ClientGameStateVi
         longest_road_holder=state.longest_road_holder,
         largest_army_holder=state.largest_army_holder,
         pending=state.pending,
+        special_build_queue=list(state.special_build_queue),
         viewer_player_id=viewer_player_id,
     )

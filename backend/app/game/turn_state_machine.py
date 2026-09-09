@@ -84,6 +84,25 @@ ALLOWED_ACTIONS: dict[Phase, frozenset[ActionType]] = {
             ActionType.LEAVE_ROOM,
         }
     ),
+    Phase.SPECIAL_BUILD: frozenset(
+        {
+            # Official 5-6p expansion rule: the player up in
+            # `GameState.special_build_queue` may trade and build using
+            # resources already in hand, but may not roll dice or play
+            # dev cards. `END_TURN` here means "done with my special
+            # build turn" -- see `rules_engine._apply_end_turn`.
+            ActionType.BUILD_SETTLEMENT,
+            ActionType.BUILD_ROAD,
+            ActionType.BUILD_CITY,
+            ActionType.BUY_DEV_CARD,
+            ActionType.BANK_TRADE,
+            ActionType.PORT_TRADE,
+            ActionType.PROPOSE_TRADE,
+            ActionType.RESPOND_TRADE,
+            ActionType.END_TURN,
+            ActionType.LEAVE_ROOM,
+        }
+    ),
     Phase.GAME_OVER: frozenset(
         {
             ActionType.LEAVE_ROOM,
