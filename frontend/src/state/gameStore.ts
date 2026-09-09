@@ -19,16 +19,72 @@
 
 import { create } from "zustand";
 import type {
+  BuildingType,
   ClientGameStateView,
   DiscardRequiredPayload,
+  EdgeId,
   ErrorPayload,
   GameOverPayload,
+  PlayerId,
+  ResourceHand,
+  ResourceType,
   RoomStatePayload,
   ServerEvent,
   TradeOfferedPayload,
+  VertexId,
 } from "../types/protocol";
 import type { ConnectionStatus, ResyncNeededDetail, WsClient } from "../api/wsClient";
 import { saveSession } from "../api/session";
+import { vertexIdKey } from "../board/hexMath";
+
+/** The 5 resource types nuke mode's precondition checks, mirroring
+ * backend/app/game/rules/nuke_mode.py's `ResourceType` iteration. */
+const NUKE_RESOURCE_TYPES: readonly ResourceType[] = ["brick", "lumber", "ore", "grain", "wool"];
+/** Mirrors nuke_mode.py's `RESOURCE_COST_PER_TYPE`. */
+const NUKE_RESOURCE_COST_PER_TYPE = 2;
+
+/**
+ * True if `hand` alone satisfies nuke mode's precondition (>=2 of each of
+ * the 5 resource types, 10 cards total) -- mirrors
+ * backend/app/game/rules/nuke_mode.py's `player_has_nuke_hand` exactly, as
+ * a UI-only convenience for gating the "Drop Nuke" trigger. The backend
+ * (`rules_engine._validate_play_nuke`) remains the sole authority; a
+ * mismatch here just means the button is mis-enabled for a moment, never
+ * a state corruption.
+ */
+export function isNukeEligibleHand(hand: ResourceHand | null | undefined): boolean {
+  if (!hand) return false;
+  return NUKE_RESOURCE_TYPES.every((type) => (hand[type] ?? 0) >= NUKE_RESOURCE_COST_PER_TYPE);
+}
+
+/** A NUKE_DROPPED event, retained for one-shot toast/animation triggers
+ * (see Game.tsx). `seq` is the envelope's monotonic sequence number, used
+ * by consumers to detect "this is a new event" even if actor/target repeat. */
+export interface NukeEventRecord {
+  seq: number;
+  actor: PlayerId;
+  target: PlayerId;
+  destroyed_vertex: VertexId;
+  destroyed_edge: EdgeId;
+  /**
+   * Settlement vs. city, looked up from the pre-nuke `view` at the moment
+   * this event was processed -- NUKE_DROPPED is always broadcast before
+   * the resulting STATE_SNAPSHOT (see backend/app/api/websocket.py's
+   * module docstring), so `get().view` here still reflects the board as
+   * it stood immediately before the piece was destroyed. `null` if
+   * unavailable (e.g. a resync raced this event away).
+   */
+  destroyedBuildingType: BuildingType | null;
+}
+
+/** A DICE_ROLLED event, retained purely to give the HUD's dice display a
+ * distinct trigger to animate on (die values alone can repeat between
+ * rolls, so the `seq` is what actually signals "a new roll happened"). */
+export interface DiceRollEventRecord {
+  seq: number;
+  die1: number;
+  die2: number;
+}
 
 const MAX_LOG_ENTRIES = 100;
 
@@ -66,6 +122,11 @@ export interface GameStoreState {
   /** Most recent ERROR event from the server, if any. */
   lastError: ErrorPayload | null;
 
+  /** Most recent NUKE_DROPPED event, for one-shot toast/animation triggers. */
+  nukeEvent: NukeEventRecord | null;
+  /** Most recent DICE_ROLLED event, for one-shot dice-tumble animation triggers. */
+  diceRollEvent: DiceRollEventRecord | null;
+
   /** Rolling human-readable turn/event log, newest last. */
   log: LogEntry[];
 
@@ -89,6 +150,8 @@ function initialState(): Pick<
   | "tradeOffers"
   | "gameOver"
   | "lastError"
+  | "nukeEvent"
+  | "diceRollEvent"
   | "log"
 > {
   return {
@@ -101,6 +164,8 @@ function initialState(): Pick<
     tradeOffers: {},
     gameOver: null,
     lastError: null,
+    nukeEvent: null,
+    diceRollEvent: null,
     log: [],
   };
 }
@@ -207,6 +272,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
           view: view
             ? { ...view, last_dice_roll: [event.payload.die1, event.payload.die2] }
             : view,
+          diceRollEvent: { seq: event.seq, die1: event.payload.die1, die2: event.payload.die2 },
           log: withLog(`Dice rolled: ${event.payload.total} (${event.payload.die1}+${event.payload.die2}).`),
         });
         break;
@@ -261,7 +327,26 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       }
 
       case "NUKE_DROPPED": {
-        set({ log: withLog("Nuke dropped!") });
+        // NUKE_DROPPED is always broadcast before the resulting
+        // STATE_SNAPSHOT (see backend/app/api/websocket.py's module
+        // docstring), so `view` here still reflects the board as it stood
+        // immediately before the piece was destroyed -- this is the only
+        // moment we can still look up whether it was a settlement or city.
+        const { view } = get();
+        const building = view?.board.buildings.find(
+          (b) => vertexIdKey(b.vertex_id) === vertexIdKey(event.payload.destroyed_vertex)
+        );
+        set({
+          nukeEvent: {
+            seq: event.seq,
+            actor: event.payload.actor,
+            target: event.payload.target,
+            destroyed_vertex: event.payload.destroyed_vertex,
+            destroyed_edge: event.payload.destroyed_edge,
+            destroyedBuildingType: building?.building_type ?? null,
+          },
+          log: withLog("Nuke dropped!"),
+        });
         break;
       }
 

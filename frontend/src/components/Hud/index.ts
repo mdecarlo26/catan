@@ -1,5 +1,5 @@
 // Barrel for the in-game HUD: resource tray, dev-card hand, VP counter,
-// trade panel, turn log.
+// trade panel, turn log, nuke trigger/toast, dice roll.
 export { ResourceTray, RESOURCE_ORDER, RESOURCE_ICON, RESOURCE_LABEL } from "./ResourceTray";
 export type { ResourceTrayProps } from "./ResourceTray";
 export { DevCardHand, DEV_CARD_ORDER, DEV_CARD_ICON, DEV_CARD_LABEL } from "./DevCardHand";
@@ -10,3 +10,9 @@ export { TradePanel } from "./TradePanel";
 export type { TradePanelProps, PortAccess } from "./TradePanel";
 export { TurnLog } from "./TurnLog";
 export type { TurnLogProps, TurnLogEntry } from "./TurnLog";
+export { NukeButton } from "./NukeButton";
+export type { NukeButtonProps } from "./NukeButton";
+export { NukeToast } from "./NukeToast";
+export type { NukeToastProps, NukeToastItem } from "./NukeToast";
+export { DiceRoll } from "./DiceRoll";
+export type { DiceRollProps } from "./DiceRoll";

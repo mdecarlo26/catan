@@ -52,6 +52,73 @@ function withField(values: GameSettings, key: keyof GameSettings, value: unknown
   return { ...values, [key]: value };
 }
 
+/** Friendly labels for `board_layout`'s raw wire values (see
+ * settings_schema.py: "random"/"fixed" plus named layout-registry keys).
+ * Any value without an entry here just falls back to showing the raw
+ * string, so a newly-added layout key never breaks rendering. */
+const BOARD_LAYOUT_LABELS: Record<string, string> = {
+  random: "Random",
+  fixed: "Fixed",
+  standard: "Standard (3-4p)",
+  expansion_5_6: "Expansion (5-6p)",
+  extended_7_8: "Extended (7-8p)",
+  two_player: "Two Player",
+};
+
+/**
+ * Custom renderer for `board_layout`: a dropdown with clearly-labeled
+ * options instead of the generic string select's raw wire values (typing
+ * "expansion_5_6" by hand is bad UX for a friend group). Falls back to
+ * just "Random"/"Fixed" if the registry entry didn't supply `options`.
+ */
+function renderBoardLayoutSelect(
+  field: LobbySettingFieldMeta,
+  values: GameSettings,
+  onChange: (next: GameSettings) => void,
+  disabled: boolean
+): JSX.Element {
+  const id = `setting-${field.key}`;
+  const value = typeof values.board_layout === "string" ? values.board_layout : String(field.default ?? "random");
+  const choices = field.options && field.options.length > 0 ? field.options : ["random", "fixed"];
+  return (
+    <select
+      id={id}
+      className={styles.select}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(withField(values, field.key, e.target.value))}
+    >
+      {choices.map((opt) => (
+        <option key={opt} value={opt}>
+          {BOARD_LAYOUT_LABELS[opt] ?? opt}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+type FieldRenderer = (
+  field: LobbySettingFieldMeta,
+  values: GameSettings,
+  onChange: (next: GameSettings) => void,
+  disabled: boolean
+) => JSX.Element;
+
+/**
+ * Per-field custom renderers, keyed by `SettingFieldMeta.key` -- an
+ * escape hatch for a field whose generic type-driven widget (see
+ * `renderControl` below) isn't good enough UX, without requiring a
+ * backend schema change (a real enum-choices concept on
+ * `SettingFieldMeta`) just for one field. `board_layout` is the only
+ * entry today, but keeping this as a lookup table (rather than a
+ * `field.key === "board_layout"` branch inline in `renderControl`) means
+ * a second field can get the same treatment later by adding one more
+ * entry here instead of another special case bolted on.
+ */
+const CUSTOM_FIELD_RENDERERS: Partial<Record<keyof GameSettings, FieldRenderer>> = {
+  board_layout: renderBoardLayoutSelect,
+};
+
 export function SettingsForm({ registry, values, onChange, disabled = false }: SettingsFormProps) {
   return (
     <form className={styles.form} aria-label="Game settings">
@@ -74,6 +141,9 @@ function renderControl(
   onChange: (next: GameSettings) => void,
   disabled: boolean
 ) {
+  const customRenderer = CUSTOM_FIELD_RENDERERS[field.key];
+  if (customRenderer) return customRenderer(field, values, onChange, disabled);
+
   const id = `setting-${field.key}`;
   const raw = values[field.key];
 

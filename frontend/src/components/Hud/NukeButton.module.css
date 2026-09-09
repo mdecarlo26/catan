@@ -1,0 +1,23 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #5a1a1a;
+  color: #ffe9e2;
+  border: 1px solid #a83232;
+  border-radius: 6px;
+  padding: 0.5rem 0.9rem;
+  font-family: system-ui, sans-serif;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: #7a2222;
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

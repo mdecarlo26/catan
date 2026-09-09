@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { wsClient } from "../api/wsClient";
 import { loadSessionForRoom } from "../api/session";
-import { bindGameStoreToWsClient, useGameStore } from "../state/gameStore";
+import { bindGameStoreToWsClient, isNukeEligibleHand, useGameStore } from "../state/gameStore";
 import { BoardCanvas, buildBoardGraph, legalCityVertexIds, legalRoadEdgeIds, legalSettlementVertexIds } from "../board";
 import {
   DevCardHand,
+  DiceRoll,
+  NukeButton,
+  NukeToast,
   ResourceTray,
   TradePanel,
   TurnLog,
@@ -14,7 +17,7 @@ import {
   RESOURCE_LABEL,
   RESOURCE_ORDER,
 } from "../components/Hud";
-import type { PortAccess, TurnLogEntry } from "../components/Hud";
+import type { NukeToastItem, PortAccess, TurnLogEntry } from "../components/Hud";
 import type {
   BankTradePayload,
   DevCardType,
@@ -32,6 +35,10 @@ import type {
 import { hexKey, vertexIdKey } from "../board/hexMath";
 
 type BuildMode = "settlement" | "road" | "city" | "road_building" | null;
+
+/** Steps of the PLAY_NUKE target-selection flow: pick the victim, then one
+ * of their settlements/cities, then one of their roads, then confirm. */
+type NukeStep = "idle" | "pick_player" | "pick_vertex" | "pick_edge" | "confirm";
 
 /** The forward-then-reverse 2N-long setup placement sequence, mirroring
  * backend/app/game/rules/setup_strategies.py's SnakeDraftSetup.draft_order. */
@@ -144,6 +151,70 @@ function DiscardPanel({
   );
 }
 
+/**
+ * The PLAY_NUKE target-selection flow's inline panel: which sub-step it's
+ * on drives which prompt/controls show. Vertex/edge picking itself
+ * happens on the board (BoardCanvas, driven by the legalVertexIds/
+ * legalEdgeIds computed in the component below) -- this panel is just the
+ * player-pick list, running commentary, and confirm/cancel controls.
+ */
+function NukeFlowPanel({
+  step,
+  otherPlayers,
+  targetPlayerId,
+  onPickPlayer,
+  onConfirm,
+  onCancel,
+}: {
+  step: NukeStep;
+  otherPlayers: readonly PlayerSummary[];
+  targetPlayerId: PlayerId | null;
+  onPickPlayer: (playerId: PlayerId) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  if (step === "idle") return null;
+  const targetName = targetPlayerId
+    ? otherPlayers.find((p) => p.player_id === targetPlayerId)?.nickname ?? targetPlayerId
+    : null;
+
+  return (
+    <div style={{ border: "2px solid #a83232", background: "#2a1414", color: "#ffe9e2", padding: 8, margin: "8px 0" }}>
+      <p style={{ margin: "0 0 4px", fontWeight: 700 }}>{"\u{1F4A3}"} Drop Nuke</p>
+
+      {step === "pick_player" && (
+        <>
+          <p>Choose a target player:</p>
+          {otherPlayers.map((p) => (
+            <button key={p.player_id} type="button" onClick={() => onPickPlayer(p.player_id)}>
+              {p.nickname}
+            </button>
+          ))}
+        </>
+      )}
+
+      {step === "pick_vertex" && <p>Click one of {targetName}'s settlements/cities on the board.</p>}
+
+      {step === "pick_edge" && <p>Now click one of {targetName}'s roads on the board.</p>}
+
+      {step === "confirm" && (
+        <>
+          <p>
+            Destroy {targetName}'s selected settlement/city and road? This spends 2 of each resource (10 cards).
+          </p>
+          <button type="button" onClick={onConfirm}>
+            Confirm Nuke
+          </button>
+        </>
+      )}
+
+      <button type="button" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 const PLAYABLE_DEV_CARDS: readonly DevCardType[] = [
   "knight",
   "road_building",
@@ -170,12 +241,45 @@ export default function Game() {
   const discardRequired = useGameStore((state) => state.discardRequired);
   const tradeOffers = useGameStore((state) => state.tradeOffers);
   const log = useGameStore((state) => state.log);
+  const nukeEvent = useGameStore((state) => state.nukeEvent);
+  const diceRollEvent = useGameStore((state) => state.diceRollEvent);
 
   const [buildMode, setBuildMode] = useState<BuildMode>(null);
   const [roadBuildingEdges, setRoadBuildingEdges] = useState<EdgeId[]>([]);
   const [devCardPrompt, setDevCardPrompt] = useState<"monopoly" | "year_of_plenty" | null>(null);
   const [monopolyChoice, setMonopolyChoice] = useState<ResourceType>("brick");
   const [yopChoice, setYopChoice] = useState<[ResourceType, ResourceType]>(["brick", "brick"]);
+
+  const [nukeStep, setNukeStep] = useState<NukeStep>("idle");
+  const [nukeTargetPlayer, setNukeTargetPlayer] = useState<PlayerId | null>(null);
+  const [nukeTargetVertex, setNukeTargetVertex] = useState<VertexId | null>(null);
+  const [nukeTargetEdge, setNukeTargetEdge] = useState<EdgeId | null>(null);
+  const [nukeToasts, setNukeToasts] = useState<NukeToastItem[]>([]);
+  const nukeToastTimers = useRef<number[]>([]);
+
+  useEffect(() => {
+    return () => {
+      nukeToastTimers.current.forEach((t) => window.clearTimeout(t));
+    };
+  }, []);
+
+  // NUKE_DROPPED fires for every player, not just the actor/victim -- pop
+  // a brief toast for whoever's watching. Keyed off `nukeEvent.seq` so a
+  // repeat actor/target pair (multiple nukes in one game) still re-triggers.
+  useEffect(() => {
+    if (!nukeEvent || !view) return;
+    const actorName = view.players[nukeEvent.actor]?.nickname ?? "Someone";
+    const targetName = view.players[nukeEvent.target]?.nickname ?? "an opponent";
+    const pieceLabel = nukeEvent.destroyedBuildingType === "city" ? "city" : "settlement";
+    const id = nukeEvent.seq;
+    setNukeToasts((prev) => [...prev, { id, text: `${actorName} nuked ${targetName}'s ${pieceLabel} and a road!` }]);
+    const timer = window.setTimeout(() => {
+      setNukeToasts((prev) => prev.filter((toast) => toast.id !== id));
+    }, 4000);
+    nukeToastTimers.current.push(timer);
+    // Only re-run when a genuinely new event lands, not on every `view` update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nukeEvent?.seq]);
 
   useEffect(() => {
     const unbind = bindGameStoreToWsClient(wsClient);
@@ -204,6 +308,12 @@ export default function Game() {
   const me = view && myId ? view.players[myId] : undefined;
   const isMyTurn = !!(view && myId && view.turn_order[view.current_player_index] === myId);
   const pending = view?.pending ?? null;
+  // Gates the normal MAIN-phase action set (build/buy/play-dev-card/end
+  // turn): the viewer's turn, no pending robber/discard/trade-response
+  // action, and not mid-flow on a separate exclusive interaction (nuke
+  // targeting).
+  const canAct = !!view && view.phase === "main" && isMyTurn && !pending && nukeStep === "idle";
+  const nukeEligible = isNukeEligibleHand(me?.hand);
 
   const graph = useMemo(() => (view ? buildBoardGraph(view.board) : null), [view?.board]);
 
@@ -230,11 +340,62 @@ export default function Game() {
       } else if (buildMode === "road" || buildMode === "road_building") {
         legalEdgeIds = legalRoadEdgeIds(graph, view.board, myId);
       }
+    } else if (view.phase === "main" && isMyTurn && nukeTargetPlayer) {
+      // Nuke target-selection: highlight only the target player's own
+      // settlements/cities (pick_vertex step) or roads (pick_edge step),
+      // reusing the same legalVertexIds/legalEdgeIds highlighting
+      // BoardCanvas already uses for normal build-mode selection.
+      if (nukeStep === "pick_vertex") {
+        legalVertexIds = view.board.buildings
+          .filter((b) => b.player_id === nukeTargetPlayer)
+          .map((b) => b.vertex_id);
+      } else if (nukeStep === "pick_edge") {
+        legalEdgeIds = view.board.roads
+          .filter((r) => r.player_id === nukeTargetPlayer)
+          .map((r) => r.edge_id);
+      }
     }
+  }
+
+  function startNuke() {
+    setBuildMode(null);
+    setRoadBuildingEdges([]);
+    setDevCardPrompt(null);
+    setNukeStep("pick_player");
+  }
+
+  function cancelNuke() {
+    setNukeStep("idle");
+    setNukeTargetPlayer(null);
+    setNukeTargetVertex(null);
+    setNukeTargetEdge(null);
+  }
+
+  function pickNukeTargetPlayer(playerId: PlayerId) {
+    setNukeTargetPlayer(playerId);
+    setNukeStep("pick_vertex");
+  }
+
+  function confirmNuke() {
+    if (!nukeTargetPlayer || !nukeTargetVertex || !nukeTargetEdge) return;
+    wsClient.send({
+      type: "PLAY_NUKE",
+      payload: {
+        target_player_id: nukeTargetPlayer,
+        target_vertex_id: nukeTargetVertex,
+        target_edge_id: nukeTargetEdge,
+      },
+    });
+    cancelNuke();
   }
 
   function handleVertexClick(vertexId: VertexId) {
     if (!view || !myId) return;
+    if (nukeStep === "pick_vertex") {
+      setNukeTargetVertex(vertexId);
+      setNukeStep("pick_edge");
+      return;
+    }
     if (view.phase === "setup" && isMySetupTurn && setupExpectation!.action === "settlement") {
       wsClient.send({ type: "BUILD_SETTLEMENT", payload: { vertex_id: vertexId } });
       return;
@@ -250,6 +411,11 @@ export default function Game() {
 
   function handleEdgeClick(edgeId: EdgeId) {
     if (!view || !myId) return;
+    if (nukeStep === "pick_edge") {
+      setNukeTargetEdge(edgeId);
+      setNukeStep("confirm");
+      return;
+    }
     if (view.phase === "setup" && isMySetupTurn && setupExpectation!.action === "road") {
       wsClient.send({ type: "BUILD_ROAD", payload: { edge_id: edgeId } });
       return;
@@ -330,6 +496,7 @@ export default function Game() {
 
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+      <NukeToast toasts={nukeToasts} />
       <div>
         <h1>Game</h1>
         <p>Room code: {roomCode}</p>
@@ -339,9 +506,13 @@ export default function Game() {
         <p>
           Phase: {view.phase} -- {isMyTurn ? "Your turn" : `${currentPlayerName}'s turn`}
         </p>
-        {view.last_dice_roll ? (
-          <p>Last roll: {view.last_dice_roll[0]} + {view.last_dice_roll[1]} = {view.last_dice_roll[0] + view.last_dice_roll[1]}</p>
-        ) : null}
+        {(view.last_dice_roll || diceRollEvent) && (
+          <DiceRoll
+            die1={diceRollEvent?.die1 ?? view.last_dice_roll?.[0] ?? null}
+            die2={diceRollEvent?.die2 ?? view.last_dice_roll?.[1] ?? null}
+            rollSeq={diceRollEvent?.seq ?? null}
+          />
+        )}
 
         <BoardCanvas
           board={view.board}
@@ -407,7 +578,16 @@ export default function Game() {
           </div>
         )}
 
-        {view.phase === "main" && isMyTurn && !pending && (
+        <NukeFlowPanel
+          step={nukeStep}
+          otherPlayers={otherPlayers}
+          targetPlayerId={nukeTargetPlayer}
+          onPickPlayer={pickNukeTargetPlayer}
+          onConfirm={confirmNuke}
+          onCancel={cancelNuke}
+        />
+
+        {canAct && (
           <div style={{ margin: "8px 0" }}>
             <button type="button" disabled={buildMode === "settlement"} onClick={() => setBuildMode("settlement")}>
               Build Settlement
@@ -513,10 +693,23 @@ export default function Game() {
           hasLargestArmy={me?.has_largest_army}
         />
         <ResourceTray hand={me?.hand ?? {}} />
+        {view.settings.nuke_mode && nukeEligible && nukeStep === "idle" && (
+          <div style={{ margin: "8px 0" }}>
+            <NukeButton
+              disabled={!canAct}
+              title={
+                canAct
+                  ? "Destroy an opponent's settlement/city and one of their roads (costs 2 of each resource)."
+                  : "You can drop a nuke only during your own main-phase turn."
+              }
+              onClick={startNuke}
+            />
+          </div>
+        )}
         <DevCardHand
           cards={me?.dev_cards ?? {}}
-          playableCardTypes={view.phase === "main" && isMyTurn && !pending ? PLAYABLE_DEV_CARDS : []}
-          onPlay={view.phase === "main" && isMyTurn && !pending ? handlePlayDevCard : undefined}
+          playableCardTypes={canAct ? PLAYABLE_DEV_CARDS : []}
+          onPlay={canAct ? handlePlayDevCard : undefined}
         />
         {myId && (
           <TradePanel

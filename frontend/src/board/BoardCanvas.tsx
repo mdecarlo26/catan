@@ -12,9 +12,9 @@
  * are omitted -- e.g. while it isn't the viewer's turn).
  */
 import { useEffect, useRef, useState } from "react";
-import { Application, Container, Graphics, Text, TextStyle } from "pixi.js";
+import { Application, Container, Graphics, Text, TextStyle, Ticker } from "pixi.js";
 import type { EdgeId, PlayerId, PortType, VertexId, WireBoardView } from "../types/protocol";
-import { computeBoardGeometry, HEX_SIZE, edgeIdKey, hexKey, vertexIdKey } from "./hexMath";
+import { computeBoardGeometry, HEX_SIZE, edgeIdKey, hexEquals, hexKey, vertexIdKey, type Point } from "./hexMath";
 import { buildEdgeKeySet, buildVertexKeySet } from "./boardInteraction";
 import { HexTileView } from "./HexTile";
 import { VertexNodeView } from "./VertexNode";
@@ -62,6 +62,24 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const appRef = useRef<Application | null>(null);
+  // `root` persists across data-driven rebuilds (unlike the old
+  // per-render `app.stage.removeChildren()` approach) so that
+  // `effectsLayer` -- which hosts transient robber-slide / nuke-destroy
+  // animations -- survives a rebuild triggered by the STATE_SNAPSHOT that
+  // typically lands a moment after the event that kicked off an
+  // animation. `staticLayer` is what gets torn down and rebuilt each time
+  // board data actually changes.
+  const rootRef = useRef<Container | null>(null);
+  const staticLayerRef = useRef<Container | null>(null);
+  const effectsLayerRef = useRef<Container | null>(null);
+  /** The board from the previous rebuild, used to detect "the robber just
+   * moved" / "a building or road just vanished" (nuke) so those changes
+   * can be animated instead of just snapping to the new state. */
+  const prevBoardRef = useRef<WireBoardView | null>(null);
+  /** Ticker callbacks currently driving an in-flight animation, tracked so
+   * they can be torn down on unmount (Application.destroy() stops the
+   * ticker, but doesn't know about closures captured in `.add()`). */
+  const activeTickersRef = useRef<Set<(ticker: Ticker) => void>>(new Set());
   const [ready, setReady] = useState(false);
 
   // Mount/unmount the PixiJS Application exactly once.
@@ -82,7 +100,17 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
         app.destroy(true, { children: true });
         return;
       }
+      const root = new Container();
+      const staticLayer = new Container();
+      const effectsLayer = new Container();
+      root.addChild(staticLayer);
+      root.addChild(effectsLayer);
+      app.stage.addChild(root);
+
       appRef.current = app;
+      rootRef.current = root;
+      staticLayerRef.current = staticLayer;
+      effectsLayerRef.current = effectsLayer;
       hostRef.current?.appendChild(app.canvas);
       setReady(true);
     })();
@@ -92,7 +120,13 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
       setReady(false);
       const current = appRef.current;
       appRef.current = null;
+      rootRef.current = null;
+      staticLayerRef.current = null;
+      effectsLayerRef.current = null;
+      prevBoardRef.current = null;
       if (current) {
+        for (const tick of activeTickersRef.current) current.ticker.remove(tick);
+        activeTickersRef.current.clear();
         if (hostRef.current && current.canvas && current.canvas.parentNode === hostRef.current) {
           hostRef.current.removeChild(current.canvas);
         }
@@ -111,15 +145,18 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
     }
   }, [ready, width, height]);
 
-  // Rebuild the entire scene graph whenever the board data, highlight
-  // sets, or interaction callbacks change.
+  // Rebuild the static scene graph whenever the board data, highlight
+  // sets, or interaction callbacks change. `effectsLayer` is deliberately
+  // left untouched here -- see the animation-trigger block at the end of
+  // this effect.
   useEffect(() => {
     const app = appRef.current;
-    if (!app || !ready) return;
+    const root = rootRef.current;
+    const staticLayer = staticLayerRef.current;
+    const effectsLayer = effectsLayerRef.current;
+    if (!app || !ready || !root || !staticLayer || !effectsLayer) return;
 
-    app.stage.removeChildren();
-    const root = new Container();
-    app.stage.addChild(root);
+    staticLayer.removeChildren();
 
     const hexCoords = board.hexes.map((h) => h.coord);
     const geometry = computeBoardGeometry(hexCoords, hexSize);
@@ -141,7 +178,7 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
     for (const tile of board.hexes) {
       const p = geometry.hexPixels.get(hexKey(tile.coord));
       if (!p) continue;
-      root.addChild(
+      staticLayer.addChild(
         new HexTileView({
           tile,
           x: p.x,
@@ -172,12 +209,12 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
       if (!v0 || !v1) continue;
       const midX = (v0.x + v1.x) / 2;
       const midY = (v0.y + v1.y) / 2;
-      root.addChild(makePortMarker(port.port_type, midX, midY, hexSize));
+      staticLayer.addChild(makePortMarker(port.port_type, midX, midY, hexSize));
     }
 
     for (const v of geometry.vertices.values()) {
       const b = buildingByVertexKey.get(v.key);
-      root.addChild(
+      staticLayer.addChild(
         new VertexNodeView({
           vertexId: v.id,
           key: v.key,
@@ -194,7 +231,7 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
 
     for (const e of geometry.edges.values()) {
       const r = roadByEdgeKey.get(e.key);
-      root.addChild(
+      staticLayer.addChild(
         new EdgeSegmentView({
           edgeId: e.id,
           key: e.key,
@@ -208,6 +245,39 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
         })
       );
     }
+
+    // --- Animation polish: robber slide + nuke destroy flash ---------
+    // Diffed purely from board data (previous vs. current), so this needs
+    // no dedicated event props: a robber_hex change is always a
+    // ROBBER_MOVED, and a building/road present a moment ago but gone now
+    // can only be a nuke (normal play only ever adds buildings/roads,
+    // never removes one -- a settlement upgrading to a city keeps its
+    // vertex).
+    const prevBoard = prevBoardRef.current;
+    if (prevBoard) {
+      if (!hexEquals(prevBoard.robber_hex, board.robber_hex)) {
+        const fromPixel = geometry.hexPixels.get(hexKey(prevBoard.robber_hex));
+        const toPixel = geometry.hexPixels.get(hexKey(board.robber_hex));
+        if (fromPixel && toPixel) {
+          animateRobberSlide(effectsLayer, app.ticker, fromPixel, toPixel, hexSize, activeTickersRef.current);
+        }
+      }
+
+      const currentVertexKeys = new Set(board.buildings.map((b) => vertexIdKey(b.vertex_id)));
+      for (const b of prevBoard.buildings) {
+        if (currentVertexKeys.has(vertexIdKey(b.vertex_id))) continue;
+        const v = geometry.vertices.get(vertexIdKey(b.vertex_id));
+        if (v) animateDestroyFlash(effectsLayer, app.ticker, v.x, v.y, hexSize, activeTickersRef.current);
+      }
+
+      const currentEdgeKeys = new Set(board.roads.map((r) => edgeIdKey(r.edge_id)));
+      for (const r of prevBoard.roads) {
+        if (currentEdgeKeys.has(edgeIdKey(r.edge_id))) continue;
+        const e = geometry.edges.get(edgeIdKey(r.edge_id));
+        if (e) animateDestroyLine(effectsLayer, app.ticker, e.x1, e.y1, e.x2, e.y2, activeTickersRef.current);
+      }
+    }
+    prevBoardRef.current = board;
   }, [ready, board, hexSize, width, height, legalVertexIds, legalEdgeIds, onVertexClick, onEdgeClick, playerColorIndex]);
 
   return <div ref={hostRef} style={{ width, height, lineHeight: 0 }} />;
@@ -246,6 +316,134 @@ function makePortMarker(portType: PortType, x: number, y: number, hexSize: numbe
   container.addChild(label);
 
   return container;
+}
+
+// ---------------------------------------------------------------------
+// Animation polish: robber slide + nuke destroy flash. Both are driven
+// entirely by a PIXI Ticker (elapsed wall-clock time, eased), and remove
+// themselves (graphics + ticker callback) on completion -- see the
+// `effectsLayer` docstring above for why these live outside the
+// per-render `staticLayer` rebuild.
+// ---------------------------------------------------------------------
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+function drawRobberShape(g: Graphics, size: number): void {
+  g.clear();
+  g.roundRect(-size * 0.14, -size * 0.32, size * 0.28, size * 0.5, size * 0.1)
+    .fill({ color: 0x2b2b2b, alpha: 0.92 })
+    .stroke({ width: 1.5, color: 0x000000 });
+  g.circle(0, -size * 0.34, size * 0.14)
+    .fill({ color: 0x2b2b2b, alpha: 0.92 })
+    .stroke({ width: 1.5, color: 0x000000 });
+}
+
+const ROBBER_SLIDE_MS = 380;
+
+/** Slides a ghost robber token from `fromPixel` to `toPixel`, fading out
+ * near the end (the static robber marker is already drawn at its new,
+ * final hex by HexTileView -- this ghost just sells the motion of
+ * getting there instead of the token teleporting). */
+function animateRobberSlide(
+  effectsLayer: Container,
+  ticker: Ticker,
+  fromPixel: Point,
+  toPixel: Point,
+  size: number,
+  activeTickers: Set<(t: Ticker) => void>
+): void {
+  const ghost = new Graphics();
+  drawRobberShape(ghost, size);
+  ghost.x = fromPixel.x;
+  ghost.y = fromPixel.y;
+  effectsLayer.addChild(ghost);
+
+  const start = performance.now();
+  const tick = () => {
+    const t = Math.min(1, (performance.now() - start) / ROBBER_SLIDE_MS);
+    const eased = easeOutCubic(t);
+    ghost.x = fromPixel.x + (toPixel.x - fromPixel.x) * eased;
+    ghost.y = fromPixel.y + (toPixel.y - fromPixel.y) * eased;
+    ghost.alpha = t < 0.7 ? 1 : Math.max(0, 1 - (t - 0.7) / 0.3);
+    if (t >= 1) {
+      ticker.remove(tick);
+      activeTickers.delete(tick);
+      ghost.destroy();
+    }
+  };
+  activeTickers.add(tick);
+  ticker.add(tick);
+}
+
+const DESTROY_FLASH_MS = 550;
+
+/** A brief expanding, fading burst at a destroyed settlement/city's
+ * vertex -- feedback for a nuked building disappearing instead of just
+ * vanishing on the next snapshot. */
+function animateDestroyFlash(
+  effectsLayer: Container,
+  ticker: Ticker,
+  x: number,
+  y: number,
+  size: number,
+  activeTickers: Set<(t: Ticker) => void>
+): void {
+  const gfx = new Graphics();
+  gfx.x = x;
+  gfx.y = y;
+  effectsLayer.addChild(gfx);
+
+  const start = performance.now();
+  const tick = () => {
+    const t = Math.min(1, (performance.now() - start) / DESTROY_FLASH_MS);
+    const radius = size * (0.25 + 0.55 * t);
+    gfx.clear();
+    gfx
+      .circle(0, 0, radius)
+      .fill({ color: 0xff5a3c, alpha: 0.85 * (1 - t) })
+      .stroke({ width: 2, color: 0xffffff, alpha: 0.9 * (1 - t) });
+    if (t >= 1) {
+      ticker.remove(tick);
+      activeTickers.delete(tick);
+      gfx.destroy();
+    }
+  };
+  activeTickers.add(tick);
+  ticker.add(tick);
+}
+
+/** A brief fading flash along a destroyed road's edge -- the road
+ * equivalent of animateDestroyFlash. */
+function animateDestroyLine(
+  effectsLayer: Container,
+  ticker: Ticker,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  activeTickers: Set<(t: Ticker) => void>
+): void {
+  const gfx = new Graphics();
+  effectsLayer.addChild(gfx);
+
+  const start = performance.now();
+  const tick = () => {
+    const t = Math.min(1, (performance.now() - start) / DESTROY_FLASH_MS);
+    gfx.clear();
+    gfx
+      .moveTo(x1, y1)
+      .lineTo(x2, y2)
+      .stroke({ width: 10 * (1 - t * 0.4), color: 0xff5a3c, alpha: 0.85 * (1 - t), cap: "round" });
+    if (t >= 1) {
+      ticker.remove(tick);
+      activeTickers.delete(tick);
+      gfx.destroy();
+    }
+  };
+  activeTickers.add(tick);
+  ticker.add(tick);
 }
 
 export { PLAYER_COLOR_PALETTE, TERRAIN_LABELS };
