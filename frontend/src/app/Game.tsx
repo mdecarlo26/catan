@@ -633,6 +633,7 @@ export default function Game() {
           legalEdgeIds={legalEdgeIds}
           onVertexClick={handleVertexClick}
           onEdgeClick={handleEdgeClick}
+          nukeEvent={nukeEvent}
         />
 
         {view.phase === "setup" && (

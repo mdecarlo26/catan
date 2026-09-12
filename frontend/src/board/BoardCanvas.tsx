@@ -13,13 +13,41 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Application, Container, Graphics, Text, TextStyle, Ticker } from "pixi.js";
-import type { EdgeId, PlayerId, PortType, VertexId, WireBoardView } from "../types/protocol";
-import { computeBoardGeometry, HEX_SIZE, edgeIdKey, hexEquals, hexKey, vertexIdKey, type Point } from "./hexMath";
+import type { BuildingType, EdgeId, PlayerId, PortType, VertexId, WireBoardView } from "../types/protocol";
+import {
+  computeBoardGeometry,
+  HEX_SIZE,
+  edgeIdKey,
+  hexEquals,
+  hexKey,
+  vertexIdKey,
+  type EdgeGeometry,
+  type Point,
+} from "./hexMath";
 import { buildEdgeKeySet, buildVertexKeySet } from "./boardInteraction";
 import { HexTileView } from "./HexTile";
 import { VertexNodeView } from "./VertexNode";
 import { EdgeSegmentView } from "./EdgeSegment";
-import { assignPlayerColorIndices, PLAYER_COLOR_PALETTE, TERRAIN_LABELS } from "./theme";
+import { assignPlayerColorIndices, playerColor, PLAYER_COLOR_PALETTE, TERRAIN_LABELS } from "./theme";
+import type { NukeEventRecord } from "../state/gameStore";
+
+/**
+ * Resolve a player -> palette-color-index function for `board`, matching
+ * the same "explicit override, else first-seen order across
+ * buildings/roads" convention used by the static scene rebuild below. Used
+ * both there and by the nuke-drop animation (which needs the victim's
+ * color independently of the vertex/edge rebuild).
+ */
+function resolveColorIndexFor(
+  board: WireBoardView,
+  playerColorIndex: Record<PlayerId, number> | undefined
+): (playerId: PlayerId) => number {
+  const seenPlayerIds: PlayerId[] = [];
+  for (const b of board.buildings) seenPlayerIds.push(b.player_id);
+  for (const r of board.roads) seenPlayerIds.push(r.player_id);
+  const autoColorIndex = assignPlayerColorIndices(seenPlayerIds);
+  return (playerId: PlayerId): number => playerColorIndex?.[playerId] ?? autoColorIndex.get(playerId) ?? 0;
+}
 
 export interface BoardCanvasProps {
   board: WireBoardView;
@@ -41,6 +69,15 @@ export interface BoardCanvasProps {
    */
   playerColorIndex?: Record<PlayerId, number>;
   backgroundColor?: number;
+  /**
+   * Most recent NUKE_DROPPED event (see gameStore.ts's NukeEventRecord),
+   * or null/undefined if none has happened yet this session. Threaded in
+   * directly so the falling-bomb animation can start the instant the
+   * event arrives, ahead of the STATE_SNAPSHOT that actually removes the
+   * destroyed vertex/edge from `board` -- see the nukeEvent-keyed effect
+   * below for the full explanation.
+   */
+  nukeEvent?: NukeEventRecord | null;
 }
 
 const DEFAULT_WIDTH = 900;
@@ -58,6 +95,7 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
     onEdgeClick,
     playerColorIndex,
     backgroundColor = 0x0b3d59,
+    nukeEvent,
   } = props;
 
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -80,6 +118,21 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
    * they can be torn down on unmount (Application.destroy() stops the
    * ticker, but doesn't know about closures captured in `.add()`). */
   const activeTickersRef = useRef<Set<(ticker: Ticker) => void>>(new Set());
+  /**
+   * Vertex/edge keys ("already animated via nukeEvent") currently mid-way
+   * through the event-driven `animateNukeDrop` sequence. The board-diff
+   * pass below (which detects a nuke the *old* way, by noticing a
+   * building/road vanished between renders) checks this set and skips
+   * firing its own plain flash/line for anything in it, so a nuke plays
+   * exactly one coherent animation instead of two overlapping ones. Each
+   * key is removed automatically (see `nukeDedupTimeoutsRef`) once the
+   * event-driven animation has had time to fully finish.
+   */
+  const nukeDedupKeysRef = useRef<Set<string>>(new Set());
+  /** Pending `window.setTimeout` ids that clear `nukeDedupKeysRef` entries, tracked for unmount cleanup. */
+  const nukeDedupTimeoutsRef = useRef<Set<ReturnType<typeof window.setTimeout>>>(new Set());
+  /** Last `nukeEvent.seq` already handled by the nuke-drop effect, guarding against React StrictMode's double-invoke and re-renders that don't carry a new event. */
+  const processedNukeSeqRef = useRef<number | null>(null);
   const [ready, setReady] = useState(false);
 
   // Mount/unmount the PixiJS Application exactly once.
@@ -124,6 +177,9 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
       staticLayerRef.current = null;
       effectsLayerRef.current = null;
       prevBoardRef.current = null;
+      for (const timeoutId of nukeDedupTimeoutsRef.current) window.clearTimeout(timeoutId);
+      nukeDedupTimeoutsRef.current.clear();
+      nukeDedupKeysRef.current.clear();
       if (current) {
         for (const tick of activeTickersRef.current) current.ticker.remove(tick);
         activeTickersRef.current.clear();
@@ -190,12 +246,7 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
     }
 
     // Determine player -> palette color index.
-    const seenPlayerIds: PlayerId[] = [];
-    for (const b of board.buildings) seenPlayerIds.push(b.player_id);
-    for (const r of board.roads) seenPlayerIds.push(r.player_id);
-    const autoColorIndex = assignPlayerColorIndices(seenPlayerIds);
-    const colorIndexFor = (playerId: PlayerId): number =>
-      playerColorIndex?.[playerId] ?? autoColorIndex.get(playerId) ?? 0;
+    const colorIndexFor = resolveColorIndexFor(board, playerColorIndex);
 
     const legalVKeys = buildVertexKeySet(legalVertexIds);
     const legalEKeys = buildEdgeKeySet(legalEdgeIds);
@@ -265,20 +316,88 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
 
       const currentVertexKeys = new Set(board.buildings.map((b) => vertexIdKey(b.vertex_id)));
       for (const b of prevBoard.buildings) {
-        if (currentVertexKeys.has(vertexIdKey(b.vertex_id))) continue;
-        const v = geometry.vertices.get(vertexIdKey(b.vertex_id));
+        const key = vertexIdKey(b.vertex_id);
+        if (currentVertexKeys.has(key)) continue;
+        // Already shown a full fall+explosion for this vertex via the
+        // nukeEvent-driven effect below -- skip the plain flash so this
+        // destruction doesn't animate twice.
+        if (nukeDedupKeysRef.current.has(key)) continue;
+        const v = geometry.vertices.get(key);
         if (v) animateDestroyFlash(effectsLayer, app.ticker, v.x, v.y, hexSize, activeTickersRef.current);
       }
 
       const currentEdgeKeys = new Set(board.roads.map((r) => edgeIdKey(r.edge_id)));
       for (const r of prevBoard.roads) {
-        if (currentEdgeKeys.has(edgeIdKey(r.edge_id))) continue;
-        const e = geometry.edges.get(edgeIdKey(r.edge_id));
+        const key = edgeIdKey(r.edge_id);
+        if (currentEdgeKeys.has(key)) continue;
+        // Already handled in sync with the nuke impact phase below.
+        if (nukeDedupKeysRef.current.has(key)) continue;
+        const e = geometry.edges.get(key);
         if (e) animateDestroyLine(effectsLayer, app.ticker, e.x1, e.y1, e.x2, e.y2, activeTickersRef.current);
       }
     }
     prevBoardRef.current = board;
   }, [ready, board, hexSize, width, height, legalVertexIds, legalEdgeIds, onVertexClick, onEdgeClick, playerColorIndex]);
+
+  // Event-driven nuke-drop animation: fires the instant a NUKE_DROPPED
+  // event lands (via the `nukeEvent` prop), well ahead of the
+  // STATE_SNAPSHOT that actually removes the destroyed vertex/edge from
+  // `board` -- the diff-based effect above can only react *after* that
+  // snapshot arrives, which is too late to show anything "landing" on the
+  // piece before it disappears. Deliberately keyed on `nukeEvent?.seq`
+  // alone (not `board`) so this captures the board exactly as it stood
+  // the moment the event was processed (see NukeEventRecord's doc comment
+  // in gameStore.ts) rather than re-running on every later snapshot.
+  useEffect(() => {
+    const app = appRef.current;
+    const effectsLayer = effectsLayerRef.current;
+    if (!app || !ready || !effectsLayer) return;
+    if (!nukeEvent) return;
+    // Guards against React StrictMode's dev-mode double-invoke and against
+    // this effect re-running (e.g. on `ready` flipping) without a genuinely
+    // new event.
+    if (processedNukeSeqRef.current === nukeEvent.seq) return;
+    processedNukeSeqRef.current = nukeEvent.seq;
+
+    const hexCoords = board.hexes.map((h) => h.coord);
+    const geometry = computeBoardGeometry(hexCoords, hexSize);
+    const vertexGeom = geometry.vertices.get(vertexIdKey(nukeEvent.destroyed_vertex));
+    // If the vertex can't be resolved (e.g. a resync raced this event
+    // away, or the board geometry doesn't match yet) there's nothing
+    // sensible to animate -- let the diff-based fallback handle it.
+    if (!vertexGeom) return;
+    const edgeGeom = geometry.edges.get(edgeIdKey(nukeEvent.destroyed_edge)) ?? null;
+
+    const colorIndexFor = resolveColorIndexFor(board, playerColorIndex);
+    const victimColorIndex = colorIndexFor(nukeEvent.target);
+
+    // Mark these keys as "already animated via nukeEvent" so the
+    // diff-based pass above skips them once the corresponding
+    // STATE_SNAPSHOT lands and actually removes the building/road.
+    const vertexKey = vertexIdKey(nukeEvent.destroyed_vertex);
+    const edgeKey = edgeIdKey(nukeEvent.destroyed_edge);
+    nukeDedupKeysRef.current.add(vertexKey);
+    nukeDedupKeysRef.current.add(edgeKey);
+    const timeoutId = window.setTimeout(() => {
+      nukeDedupKeysRef.current.delete(vertexKey);
+      nukeDedupKeysRef.current.delete(edgeKey);
+      nukeDedupTimeoutsRef.current.delete(timeoutId);
+    }, NUKE_DEDUP_MS);
+    nukeDedupTimeoutsRef.current.add(timeoutId);
+
+    animateNukeDrop(
+      effectsLayer,
+      app.ticker,
+      vertexGeom,
+      edgeGeom,
+      hexSize,
+      activeTickersRef.current,
+      victimColorIndex,
+      nukeEvent.destroyedBuildingType
+    );
+    // Intentionally keyed on nukeEvent?.seq alone -- see comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, nukeEvent?.seq]);
 
   return <div ref={hostRef} style={{ width, height, lineHeight: 0 }} />;
 }
@@ -440,6 +559,149 @@ function animateDestroyLine(
       ticker.remove(tick);
       activeTickers.delete(tick);
       gfx.destroy();
+    }
+  };
+  activeTickers.add(tick);
+  ticker.add(tick);
+}
+
+// ---------------------------------------------------------------------
+// Nuke drop: a procedural bomb falls onto the destroyed vertex, then
+// explodes (shockwave ring + radiating debris) in sync with the
+// destroyed road's existing animateDestroyLine treatment. Event-driven
+// (see the nukeEvent-keyed effect above) rather than diffed from board
+// data, so it can start the instant NUKE_DROPPED arrives instead of only
+// after the piece has already vanished from the next snapshot.
+// ---------------------------------------------------------------------
+
+const NUKE_FALL_MS = 400;
+const NUKE_IMPACT_MS = 400;
+/** How long a vertex/edge key stays in `nukeDedupKeysRef` -- must outlast
+ * both the impact phase and the (independently-timed) road-line flash it
+ * kicks off, so the diff-based pass never fires a duplicate for either. */
+const NUKE_DEDUP_MS = NUKE_FALL_MS + Math.max(NUKE_IMPACT_MS, DESTROY_FLASH_MS) + 100;
+const EXPLOSION_ORANGE = 0xff5a3c;
+
+function easeInQuad(t: number): number {
+  return t * t;
+}
+
+/** Blend two 0xRRGGBB colors; t=0 is pure `a`, t=1 is pure `b`. */
+function blendColors(a: number, b: number, t: number): number {
+  const ar = (a >> 16) & 0xff;
+  const ag = (a >> 8) & 0xff;
+  const ab = a & 0xff;
+  const br = (b >> 16) & 0xff;
+  const bg = (b >> 8) & 0xff;
+  const bb = b & 0xff;
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return (r << 16) | (g << 8) | bl;
+}
+
+/** Draws a small procedural bomb: a dark rounded body plus a simple
+ * fin + lit-fuse-spark accent -- same level of effort as drawRobberShape,
+ * no image/sprite assets (this codebase draws every piece with Graphics). */
+function drawBombShape(g: Graphics, size: number): void {
+  g.clear();
+  g.circle(0, size * 0.05, size * 0.22)
+    .fill({ color: 0x1c1c1c, alpha: 0.95 })
+    .stroke({ width: 1.5, color: 0x000000 });
+  g.poly([-size * 0.09, -size * 0.18, size * 0.09, -size * 0.18, 0, -size * 0.32], true)
+    .fill({ color: 0x1c1c1c, alpha: 0.95 })
+    .stroke({ width: 1, color: 0x000000 });
+  g.moveTo(0, -size * 0.32)
+    .lineTo(size * 0.06, -size * 0.44)
+    .stroke({ width: 1.5, color: 0x8a5a2b });
+  g.circle(size * 0.07, -size * 0.47, size * 0.05).fill({ color: 0xffd23f, alpha: 0.95 });
+}
+
+/**
+ * Multi-phase nuke-drop animation on `effectsLayer`:
+ *   1. Fall (~NUKE_FALL_MS, ease-in): a bomb shape drops from well above
+ *      `vertexPixel` down onto it.
+ *   2. Impact (~NUKE_IMPACT_MS): an expanding shockwave ring plus a
+ *      handful of radiating debris lines, tinted with a blend of the
+ *      victim's player color and explosion orange, scaled slightly larger
+ *      for a destroyed city than a settlement. The destroyed road's
+ *      existing shrink+fade line effect is kicked off at the same moment
+ *      impact begins, so the two read as one simultaneous explosion
+ *      rather than the road getting its own separate bomb-drop.
+ */
+function animateNukeDrop(
+  effectsLayer: Container,
+  ticker: Ticker,
+  vertexPixel: Point,
+  edgeGeom: EdgeGeometry | null,
+  size: number,
+  activeTickers: Set<(t: Ticker) => void>,
+  victimColorIndex: number,
+  buildingType: BuildingType | null
+): void {
+  const bomb = new Graphics();
+  drawBombShape(bomb, size);
+  const startY = vertexPixel.y - size * 3;
+  bomb.x = vertexPixel.x;
+  bomb.y = startY;
+  effectsLayer.addChild(bomb);
+
+  const impact = new Graphics();
+  impact.x = vertexPixel.x;
+  impact.y = vertexPixel.y;
+  effectsLayer.addChild(impact);
+
+  const buildingScale = buildingType === "city" ? 1.3 : 1.0;
+  const ringColor = blendColors(playerColor(victimColorIndex), EXPLOSION_ORANGE, 0.5);
+  const DEBRIS_COUNT = 8;
+  const debrisAngles = Array.from(
+    { length: DEBRIS_COUNT },
+    (_, i) => (Math.PI * 2 * i) / DEBRIS_COUNT + 0.3
+  );
+
+  let impactStarted = false;
+  const start = performance.now();
+  const tick = () => {
+    const elapsed = performance.now() - start;
+
+    if (elapsed < NUKE_FALL_MS) {
+      const eased = easeInQuad(elapsed / NUKE_FALL_MS);
+      bomb.y = startY + (vertexPixel.y - startY) * eased;
+      bomb.rotation = eased * 0.6;
+      return;
+    }
+
+    if (!impactStarted) {
+      impactStarted = true;
+      bomb.destroy();
+      if (edgeGeom) {
+        animateDestroyLine(effectsLayer, ticker, edgeGeom.x1, edgeGeom.y1, edgeGeom.x2, edgeGeom.y2, activeTickers);
+      }
+    }
+
+    const it = Math.min(1, (elapsed - NUKE_FALL_MS) / NUKE_IMPACT_MS);
+    const radius = size * buildingScale * (0.3 + 0.65 * it);
+    const fade = 1 - it;
+    impact.clear();
+    impact
+      .circle(0, 0, radius)
+      .fill({ color: ringColor, alpha: 0.85 * fade })
+      .stroke({ width: 2.5, color: 0xffffff, alpha: 0.9 * fade });
+    const debrisLen = size * buildingScale * (0.25 + 0.5 * it);
+    const debrisInner = radius * 0.5;
+    for (const angle of debrisAngles) {
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      impact
+        .moveTo(dx * debrisInner, dy * debrisInner)
+        .lineTo(dx * (debrisInner + debrisLen), dy * (debrisInner + debrisLen))
+        .stroke({ width: 2, color: ringColor, alpha: 0.8 * fade });
+    }
+
+    if (it >= 1) {
+      ticker.remove(tick);
+      activeTickers.delete(tick);
+      impact.destroy();
     }
   };
   activeTickers.add(tick);
