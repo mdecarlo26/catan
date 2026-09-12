@@ -47,6 +47,10 @@ class ActionType(str, Enum):
     STEAL_RESOURCE = "STEAL_RESOURCE"
     DISCARD_CARDS = "DISCARD_CARDS"
     PLAY_NUKE = "PLAY_NUKE"
+    BLACKJACK_PLACE_BET = "BLACKJACK_PLACE_BET"
+    BLACKJACK_DECLINE = "BLACKJACK_DECLINE"
+    BLACKJACK_HIT = "BLACKJACK_HIT"
+    BLACKJACK_STAND = "BLACKJACK_STAND"
     END_TURN = "END_TURN"
     CHAT_MESSAGE = "CHAT_MESSAGE"
 
@@ -181,6 +185,20 @@ class PlayNukePayload(BaseModel):
     target_edge_id: EdgeId
 
 
+class BlackjackPlaceBetPayload(BaseModel):
+    """See the plan's "Blackjack-on-7 Mode" section. Exactly one of the
+    three fields must be set, matching one of the two allowed stake
+    kinds (`resources`, an amount from the bettor's own hand; or a
+    settlement/city -- `vertex_id` -- or road -- `edge_id` -- the bettor
+    currently owns on the board). `rules_engine` resolves `vertex_id`
+    into "settlement" vs. "city" from `Board.buildings` at bet time.
+    """
+
+    resources: ResourceHand | None = None
+    vertex_id: VertexId | None = None
+    edge_id: EdgeId | None = None
+
+
 class ChatMessagePayload(BaseModel):
     text: str = Field(min_length=1, max_length=500)
 
@@ -285,6 +303,26 @@ class PlayNukeAction(BaseModel):
     payload: PlayNukePayload
 
 
+class BlackjackPlaceBetAction(BaseModel):
+    type: Literal[ActionType.BLACKJACK_PLACE_BET] = ActionType.BLACKJACK_PLACE_BET
+    payload: BlackjackPlaceBetPayload
+
+
+class BlackjackDeclineAction(BaseModel):
+    type: Literal[ActionType.BLACKJACK_DECLINE] = ActionType.BLACKJACK_DECLINE
+    payload: EmptyPayload = EmptyPayload()
+
+
+class BlackjackHitAction(BaseModel):
+    type: Literal[ActionType.BLACKJACK_HIT] = ActionType.BLACKJACK_HIT
+    payload: EmptyPayload = EmptyPayload()
+
+
+class BlackjackStandAction(BaseModel):
+    type: Literal[ActionType.BLACKJACK_STAND] = ActionType.BLACKJACK_STAND
+    payload: EmptyPayload = EmptyPayload()
+
+
 class EndTurnAction(BaseModel):
     type: Literal[ActionType.END_TURN] = ActionType.END_TURN
     payload: EmptyPayload = EmptyPayload()
@@ -318,6 +356,10 @@ ClientAction: TypeAlias = Annotated[
     | StealResourceAction
     | DiscardCardsAction
     | PlayNukeAction
+    | BlackjackPlaceBetAction
+    | BlackjackDeclineAction
+    | BlackjackHitAction
+    | BlackjackStandAction
     | EndTurnAction
     | ChatMessageAction,
     Field(discriminator="type"),

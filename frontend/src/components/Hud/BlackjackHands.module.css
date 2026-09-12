@@ -1,0 +1,89 @@
+.table {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 2px solid #2f7a3a;
+  background: #0f2113;
+  color: #e5ffe9;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+  margin: 8px 0;
+  font-family: system-ui, sans-serif;
+}
+
+.hand {
+  border: 1px solid #245c2c;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.handActive {
+  border-color: #ffd166;
+  box-shadow: 0 0 0 1px #ffd166 inset;
+}
+
+.handHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.badge {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: #274d2b;
+}
+
+.badge[data-status="busted"] {
+  background: #5a1a1a;
+}
+
+.badge[data-status="stood"] {
+  background: #1a3a5a;
+}
+
+.total {
+  margin-left: auto;
+  font-weight: 700;
+}
+
+.cards {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.card {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.8rem;
+  height: 2.4rem;
+  padding: 0 0.3rem;
+  background: #fdfdfd;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.cardBack {
+  background: repeating-linear-gradient(45deg, #24437a, #24437a 4px, #1b3260 4px, #1b3260 8px);
+  color: transparent;
+}
+
+.stake {
+  margin-top: 0.2rem;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.waiting {
+  font-size: 0.85rem;
+  opacity: 0.8;
+  margin: 0;
+}

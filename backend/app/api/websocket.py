@@ -122,6 +122,8 @@ from app.core.room import Room, SettingsLockedError
 from app.game import board_generator, dev_cards, rules_engine
 from app.game.actions import (
     ActionType,
+    BlackjackDeclineAction,
+    BlackjackStandAction,
     ClientAction,
     EndTurnAction,
     JoinRoomPayload,
@@ -134,6 +136,12 @@ from app.game.rules import rush_timer, turn_timer
 from app.game.rules_engine import RuleViolation
 from app.game.state import Bank, GameState, Phase
 from app.protocol.events import (
+    BlackjackBetDeclinedEvent,
+    BlackjackBetPlacedEvent,
+    BlackjackDealerRevealedEvent,
+    BlackjackHandUpdatedEvent,
+    BlackjackRoundResolvedEvent,
+    BlackjackRoundStartedEvent,
     DevCardCountChangedEvent,
     DiceRolledEvent,
     DiscardRequiredEvent,
@@ -193,6 +201,12 @@ _SIMPLE_EVENT_WRAPPERS: dict[EventType, type[BaseModel]] = {
     EventType.TRADE_RESOLVED: TradeResolvedEvent,
     EventType.DEV_CARD_COUNT_CHANGED: DevCardCountChangedEvent,
     EventType.NUKE_DROPPED: NukeDroppedEvent,
+    EventType.BLACKJACK_ROUND_STARTED: BlackjackRoundStartedEvent,
+    EventType.BLACKJACK_BET_PLACED: BlackjackBetPlacedEvent,
+    EventType.BLACKJACK_BET_DECLINED: BlackjackBetDeclinedEvent,
+    EventType.BLACKJACK_HAND_UPDATED: BlackjackHandUpdatedEvent,
+    EventType.BLACKJACK_DEALER_REVEALED: BlackjackDealerRevealedEvent,
+    EventType.BLACKJACK_ROUND_RESOLVED: BlackjackRoundResolvedEvent,
     EventType.LONGEST_ROAD_CHANGED: LongestRoadChangedEvent,
     EventType.LARGEST_ARMY_CHANGED: LargestArmyChangedEvent,
     EventType.GAME_OVER: GameOverEvent,
@@ -621,6 +635,62 @@ def _cancel_rush_roll(room_code: str) -> None:
         task.cancel()
 
 
+async def _force_advance_stalled_blackjack(room: Room, state: GameState) -> None:
+    """Blackjack-on-7's (`GameSettings.blackjack_mode`) stalled-timer
+    handling, reusing `settings.turn_timer_seconds` per the plan's
+    explicit call to lean on this same pattern rather than a new
+    setting: auto-decline every player still owing a betting response
+    once the window stalls, or auto-stand whoever's currently up in the
+    hit/stand queue -- "auto-X on timeout, then advance".
+
+    Unlike `_force_advance_stalled_turn`'s single current-player/forced-
+    action shape, a stalled `status == "betting"` window can require
+    forcing *every* remaining non-responder at once (mirroring
+    `AwaitingDiscard`'s "several players can owe at the same time" shape,
+    not `AwaitingRobberPlacement`'s single-actor one) -- so this applies
+    them all in one pass instead of one player per poll tick. No
+    `TURN_TIMER_EXPIRED` event is emitted here: that payload is scoped to
+    a single ended turn, and the dedicated `BLACKJACK_BET_DECLINED` /
+    `BLACKJACK_HAND_UPDATED` events already tell every client what
+    happened.
+    """
+    round_ = state.blackjack_round
+    if round_ is None:
+        return
+
+    forced_actions: list[tuple[str, ClientAction]]
+    if round_.status == "betting":
+        forced_actions = [(pid, BlackjackDeclineAction()) for pid in list(round_.responses_pending)]
+    elif round_.bettor_queue:
+        forced_actions = [(round_.bettor_queue[0], BlackjackStandAction())]
+    else:
+        forced_actions = []
+
+    all_events: list[rules_engine.RuleEvent] = []
+    for player_id, forced in forced_actions:
+        try:
+            all_events.extend(rules_engine.validate_and_apply(state, player_id, forced))
+        except RuleViolation:
+            continue
+        # A forced stand can itself close out the round (and re-enter a
+        # different phase, e.g. straight back to Phase.MAIN, possibly
+        # even Phase.GAME_OVER) -- stop early if so (there's at most one
+        # forced action queued for that branch anyway).
+        if state.phase != Phase.BLACKJACK_ROUND:
+            break
+
+    if not all_events:
+        return
+
+    _touch(room.room_code)
+    await _dispatch_rule_events(room, all_events)
+    await _broadcast_snapshots(room, state)
+
+    if state.phase == Phase.GAME_OVER:
+        room.mark_finished()
+        _cancel_timer(room.room_code)
+
+
 async def _force_advance_stalled_turn(room: Room, state: GameState) -> None:
     if state.settings.rush_mode:
         # Rush mode has no "current player" / turn to stall -- every
@@ -630,6 +700,13 @@ async def _force_advance_stalled_turn(room: Room, state: GameState) -> None:
         # raise RuleViolation now that rush mode rejects it outright --
         # see _validate_end_turn -- but this early return avoids that
         # wasted round-trip and states the intent directly.)
+        return
+    if state.phase == Phase.BLACKJACK_ROUND:
+        # Multi-action (possibly several forced BLACKJACK_DECLINEs at
+        # once) and shaped quite differently from the single current/
+        # forced-action model below -- handled by its own helper, which
+        # does its own dispatch/snapshot broadcast and returns.
+        await _force_advance_stalled_blackjack(room, state)
         return
     if state.phase == Phase.SPECIAL_BUILD:
         # During the special build phase, the player who may act is

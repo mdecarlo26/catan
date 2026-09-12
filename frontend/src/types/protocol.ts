@@ -90,6 +90,59 @@ export type ResourceHand = Partial<Record<ResourceType, number>>;
 export type DevCardHand = Partial<Record<DevCardType, number>>;
 
 // ---------------------------------------------------------------------
+// Blackjack-on-7 primitives (mirrors state.py's Card/CardRank/CardSuit,
+// BlackjackStake, BlackjackParticipant, BlackjackRoundState)
+// ---------------------------------------------------------------------
+
+export type CardSuit = "spades" | "hearts" | "diamonds" | "clubs";
+
+export type CardRank = "A" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "J" | "Q" | "K";
+
+export interface Card {
+  rank: CardRank;
+  suit: CardSuit;
+}
+
+/**
+ * What a bettor put up for one blackjack round. Exactly one of
+ * `resources` / `vertex_id` / `edge_id` is populated, matching `kind`.
+ * Always public (not masked) -- see BlackjackStake's backend doc comment.
+ */
+export interface BlackjackStake {
+  kind: "resources" | "settlement" | "city" | "road";
+  resources?: ResourceHand | null;
+  vertex_id?: VertexId | null;
+  edge_id?: EdgeId | null;
+}
+
+export interface BlackjackParticipantView {
+  stake: BlackjackStake;
+  hand: Card[];
+  status: "playing" | "stood" | "busted";
+}
+
+/**
+ * Masked wire view of GameState.blackjack_round -- identical for every
+ * recipient (bettors' bets/hands are always fully public); only the
+ * dealer's hole card is ever hidden, via `dealer_hole_card` being `null`
+ * until `dealer_hole_card_revealed`. The round's deck is never exposed.
+ */
+export interface BlackjackRoundView {
+  dealer_id: PlayerId;
+  /** The dealer's first-dealt card. Null only while status === "betting". */
+  dealer_up_card: Card | null;
+  /** The dealer's hole (second) card. Null until dealer_hole_card_revealed. */
+  dealer_hole_card: Card | null;
+  dealer_hole_card_revealed: boolean;
+  /** The dealer's full final hand, populated only once revealed. */
+  dealer_hand: Card[];
+  status: "betting" | "bettor_turn";
+  responses_pending: PlayerId[];
+  participants: Record<PlayerId, BlackjackParticipantView>;
+  bettor_queue: PlayerId[];
+}
+
+// ---------------------------------------------------------------------
 // Game state (mirrors state.py) -- these are the SERVER-INTERNAL shapes;
 // the client only ever receives the masked ClientGameStateView below,
 // reproduced here 1:1 with events.py for reference/typing convenience.
@@ -103,6 +156,7 @@ export type Phase =
   | "robber_move"
   | "main"
   | "special_build"
+  | "blackjack_round"
   | "game_over";
 
 export interface AwaitingDiscard {
@@ -121,6 +175,13 @@ export interface AwaitingSteal {
   kind: "awaiting_steal";
   actor: PlayerId;
   candidate_targets: PlayerId[];
+  /**
+   * Carried over from the AwaitingRobberPlacement that preceded this
+   * steal -- blackjack-on-7 must only ever trigger for a dice-roll 7,
+   * never a Knight-triggered robber move, and this is how that's still
+   * known once a multi-candidate steal is being resolved.
+   */
+  reason: "dice_roll" | "knight_card";
 }
 
 export interface AwaitingTradeResponse {
@@ -178,6 +239,12 @@ export interface GameSettings {
   discard_limit: number;
   /** Friendly robber: still blocks production, never steals. Default false. */
   friendly_robber: boolean;
+  /**
+   * Blackjack-on-7: after a rolled 7's discard/robber/steal sequence
+   * resolves, the roller deals an opt-in blackjack round against any
+   * other connected player. Inapplicable in rush mode. Default false.
+   */
+  blackjack_mode: boolean;
   /** Seconds a turn may sit idle before it's auto-ended. 0 disables the timer. Default 120. */
   turn_timer_seconds: number;
 }
@@ -219,6 +286,10 @@ export type ActionType =
   | "STEAL_RESOURCE"
   | "DISCARD_CARDS"
   | "PLAY_NUKE"
+  | "BLACKJACK_PLACE_BET"
+  | "BLACKJACK_DECLINE"
+  | "BLACKJACK_HIT"
+  | "BLACKJACK_STAND"
   | "END_TURN"
   | "CHAT_MESSAGE";
 
@@ -298,6 +369,13 @@ export interface PlayNukePayload {
   target_edge_id: EdgeId;
 }
 
+export interface BlackjackPlaceBetPayload {
+  /** Exactly one of these three must be set -- see the backend payload's doc comment. */
+  resources?: ResourceHand | null;
+  vertex_id?: VertexId | null;
+  edge_id?: EdgeId | null;
+}
+
 export interface ChatMessagePayload {
   text: string;
 }
@@ -323,6 +401,10 @@ export type ClientAction =
   | { type: "STEAL_RESOURCE"; payload: StealResourcePayload }
   | { type: "DISCARD_CARDS"; payload: DiscardCardsPayload }
   | { type: "PLAY_NUKE"; payload: PlayNukePayload }
+  | { type: "BLACKJACK_PLACE_BET"; payload: BlackjackPlaceBetPayload }
+  | { type: "BLACKJACK_DECLINE"; payload: EmptyPayload }
+  | { type: "BLACKJACK_HIT"; payload: EmptyPayload }
+  | { type: "BLACKJACK_STAND"; payload: EmptyPayload }
   | { type: "END_TURN"; payload: EmptyPayload }
   | { type: "CHAT_MESSAGE"; payload: ChatMessagePayload };
 
@@ -350,6 +432,12 @@ export type EventType =
   | "TRADE_RESOLVED"
   | "DEV_CARD_COUNT_CHANGED"
   | "NUKE_DROPPED"
+  | "BLACKJACK_ROUND_STARTED"
+  | "BLACKJACK_BET_PLACED"
+  | "BLACKJACK_BET_DECLINED"
+  | "BLACKJACK_HAND_UPDATED"
+  | "BLACKJACK_DEALER_REVEALED"
+  | "BLACKJACK_ROUND_RESOLVED"
   | "LONGEST_ROAD_CHANGED"
   | "LARGEST_ARMY_CHANGED"
   | "TURN_TIMER_EXPIRED"
@@ -452,6 +540,12 @@ export interface ClientGameStateView {
    * special build turn is it" to the client.
    */
   special_build_queue: PlayerId[];
+  /**
+   * While phase === "blackjack_round": the masked view of
+   * GameState.blackjack_round (dealer's hole card hidden until reveal,
+   * deck never exposed). `null` at every other phase.
+   */
+  blackjack_round: BlackjackRoundView | null;
   /**
    * Rush-mode-only concurrent obligations -- mirror
    * GameState.rush_pending_discard / rush_pending_robber 1:1. `null` for
@@ -568,6 +662,50 @@ export interface NukeDroppedPayload {
   destroyed_edge: EdgeId;
 }
 
+export interface BlackjackRoundStartedPayload {
+  dealer_id: PlayerId;
+  eligible_player_ids: PlayerId[];
+}
+
+export interface BlackjackBetPlacedPayload {
+  player_id: PlayerId;
+  stake: BlackjackStake;
+}
+
+export interface BlackjackBetDeclinedPayload {
+  player_id: PlayerId;
+}
+
+/** A bettor's hand changed from a BLACKJACK_HIT. Never used for the dealer. */
+export interface BlackjackHandUpdatedPayload {
+  player_id: PlayerId;
+  hand: Card[];
+  status: "playing" | "stood" | "busted";
+}
+
+export interface BlackjackDealerRevealedPayload {
+  dealer_id: PlayerId;
+  dealer_hand: Card[];
+  dealer_total: number;
+  dealer_busted: boolean;
+}
+
+export interface BlackjackOutcome {
+  result: "win" | "loss" | "push";
+  stake: BlackjackStake;
+  final_hand: Card[];
+  final_total: number;
+  busted: boolean;
+}
+
+export interface BlackjackRoundResolvedPayload {
+  dealer_id: PlayerId;
+  dealer_hand: Card[];
+  dealer_total: number;
+  dealer_busted: boolean;
+  outcomes: Record<PlayerId, BlackjackOutcome>;
+}
+
 export interface LongestRoadChangedPayload {
   new_holder: PlayerId | null;
   previous_holder: PlayerId | null;
@@ -634,6 +772,30 @@ export type ServerEvent =
       payload: DevCardCountChangedPayload;
     })
   | (EventEnvelopeBase & { type: "NUKE_DROPPED"; payload: NukeDroppedPayload })
+  | (EventEnvelopeBase & {
+      type: "BLACKJACK_ROUND_STARTED";
+      payload: BlackjackRoundStartedPayload;
+    })
+  | (EventEnvelopeBase & {
+      type: "BLACKJACK_BET_PLACED";
+      payload: BlackjackBetPlacedPayload;
+    })
+  | (EventEnvelopeBase & {
+      type: "BLACKJACK_BET_DECLINED";
+      payload: BlackjackBetDeclinedPayload;
+    })
+  | (EventEnvelopeBase & {
+      type: "BLACKJACK_HAND_UPDATED";
+      payload: BlackjackHandUpdatedPayload;
+    })
+  | (EventEnvelopeBase & {
+      type: "BLACKJACK_DEALER_REVEALED";
+      payload: BlackjackDealerRevealedPayload;
+    })
+  | (EventEnvelopeBase & {
+      type: "BLACKJACK_ROUND_RESOLVED";
+      payload: BlackjackRoundResolvedPayload;
+    })
   | (EventEnvelopeBase & {
       type: "LONGEST_ROAD_CHANGED";
       payload: LongestRoadChangedPayload;

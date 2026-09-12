@@ -83,6 +83,13 @@ export const SETTINGS_REGISTRY_MOCK: LobbySettingFieldMeta[] = [
       "Friendly robber: moving the robber still blocks a hex's production, but never steals a card.",
   },
   {
+    key: "blackjack_mode",
+    type: "bool",
+    default: false,
+    description:
+      "Blackjack-on-7: after a rolled 7's discard/robber/steal sequence resolves, the roller deals an opt-in blackjack round against any other connected player. Inapplicable in rush mode.",
+  },
+  {
     key: "turn_timer_seconds",
     type: "int",
     default: 120,
@@ -102,6 +109,7 @@ export const MOCK_GAME_SETTINGS: GameSettings = {
   special_build_phase: null,
   discard_limit: 7,
   friendly_robber: false,
+  blackjack_mode: false,
   turn_timer_seconds: 120,
 };
 

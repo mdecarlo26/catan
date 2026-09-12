@@ -40,8 +40,10 @@ from __future__ import annotations
 
 from app.game import dev_cards
 from app.game.board import PlayerId
-from app.game.state import GameState
+from app.game.state import BlackjackRoundState, GameState
 from app.protocol.events import (
+    BlackjackParticipantView,
+    BlackjackRoundView,
     ClientGameStateView,
     MaskedPlayerView,
     WireBoardView,
@@ -93,6 +95,41 @@ def _masked_player_view(state: GameState, player_id: PlayerId, viewer_player_id:
     )
 
 
+def _blackjack_round_view(round_: BlackjackRoundState | None) -> BlackjackRoundView | None:
+    """Mask `GameState.blackjack_round` for the wire: the dealer's hole
+    card is split out and hidden until `dealer_hole_card_revealed`, and
+    the round's `deck` is dropped entirely (never exposed to any
+    recipient -- see `BlackjackRoundView`'s docstring). Identical for
+    every viewer; unlike `MaskedPlayerView`, there's no per-recipient
+    unmasking here (bettors' bets/hands are always fully public, per the
+    plan's "real table" rule).
+    """
+    if round_ is None:
+        return None
+    up_card = round_.dealer_hand[0] if len(round_.dealer_hand) > 0 else None
+    hole_card = (
+        round_.dealer_hand[1]
+        if round_.dealer_hole_card_revealed and len(round_.dealer_hand) > 1
+        else None
+    )
+    return BlackjackRoundView(
+        dealer_id=round_.dealer_id,
+        dealer_up_card=up_card,
+        dealer_hole_card=hole_card,
+        dealer_hole_card_revealed=round_.dealer_hole_card_revealed,
+        dealer_hand=list(round_.dealer_hand) if round_.dealer_hole_card_revealed else [],
+        status=round_.status,
+        responses_pending=list(round_.responses_pending),
+        participants={
+            player_id: BlackjackParticipantView(
+                stake=participant.stake, hand=list(participant.hand), status=participant.status
+            )
+            for player_id, participant in round_.participants.items()
+        },
+        bettor_queue=list(round_.bettor_queue),
+    )
+
+
 def to_client_view(state: GameState, viewer_player_id: str) -> ClientGameStateView:
     """Build the masked `ClientGameStateView` of `state` as seen by
     `viewer_player_id`. Safe to send to that player's socket as-is (the
@@ -123,6 +160,7 @@ def to_client_view(state: GameState, viewer_player_id: str) -> ClientGameStateVi
         largest_army_holder=state.largest_army_holder,
         pending=state.pending,
         special_build_queue=list(state.special_build_queue),
+        blackjack_round=_blackjack_round_view(state.blackjack_round),
         rush_pending_discard=state.rush_pending_discard,
         rush_pending_robber=state.rush_pending_robber,
         last_dice_roll_ts=state.last_dice_roll_ts,
