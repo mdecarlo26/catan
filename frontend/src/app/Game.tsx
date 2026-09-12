@@ -5,6 +5,9 @@ import { loadSessionForRoom } from "../api/session";
 import { bindGameStoreToWsClient, isNukeEligibleHand, useGameStore } from "../state/gameStore";
 import { BoardCanvas, buildBoardGraph, legalCityVertexIds, legalRoadEdgeIds, legalSettlementVertexIds } from "../board";
 import {
+  BlackjackBetPanel,
+  BlackjackHands,
+  BlackjackToast,
   DevCardHand,
   DiceRoll,
   NukeButton,
@@ -17,7 +20,7 @@ import {
   RESOURCE_LABEL,
   RESOURCE_ORDER,
 } from "../components/Hud";
-import type { NukeToastItem, PortAccess, TurnLogEntry } from "../components/Hud";
+import type { BlackjackBetStep, BlackjackToastItem, NukeToastItem, PortAccess, TurnLogEntry } from "../components/Hud";
 import type {
   BankTradePayload,
   DevCardType,
@@ -261,6 +264,7 @@ export default function Game() {
   const log = useGameStore((state) => state.log);
   const nukeEvent = useGameStore((state) => state.nukeEvent);
   const diceRollEvent = useGameStore((state) => state.diceRollEvent);
+  const blackjackResolvedEvent = useGameStore((state) => state.blackjackResolvedEvent);
 
   const [buildMode, setBuildMode] = useState<BuildMode>(null);
   const [roadBuildingEdges, setRoadBuildingEdges] = useState<EdgeId[]>([]);
@@ -275,11 +279,37 @@ export default function Game() {
   const [nukeToasts, setNukeToasts] = useState<NukeToastItem[]>([]);
   const nukeToastTimers = useRef<number[]>([]);
 
+  // Blackjack-on-7 bet-placement flow: mirrors the nuke flow's local
+  // step-state-machine pattern exactly. `blackjackStructurePick` is set
+  // once the bettor clicks one of their own vertices/edges on the board
+  // during the "pick_structure" step (see legalVertexIds/legalEdgeIds
+  // below and handleVertexClick/handleEdgeClick), then confirmed or
+  // cancelled before actually sending BLACKJACK_PLACE_BET.
+  const [blackjackBetStep, setBlackjackBetStep] = useState<BlackjackBetStep>("idle");
+  const [blackjackStructurePick, setBlackjackStructurePick] = useState<
+    { vertex_id: VertexId } | { edge_id: EdgeId } | null
+  >(null);
+  const [blackjackToasts, setBlackjackToasts] = useState<BlackjackToastItem[]>([]);
+  const blackjackToastTimers = useRef<number[]>([]);
+
   useEffect(() => {
     return () => {
       nukeToastTimers.current.forEach((t) => window.clearTimeout(t));
+      blackjackToastTimers.current.forEach((t) => window.clearTimeout(t));
     };
   }, []);
+
+  // Reset the local bet-placement step once the round leaves "betting"
+  // for this viewer (they responded, the round closed, or a reconnect/
+  // resync landed) -- avoids a stale "pick_structure"/"confirm_structure"
+  // step lingering after the round has moved on without them.
+  useEffect(() => {
+    if (view?.phase !== "blackjack_round" || view.blackjack_round?.status !== "betting") {
+      setBlackjackBetStep("idle");
+      setBlackjackStructurePick(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view?.phase, view?.blackjack_round?.status, view?.blackjack_round?.responses_pending]);
 
   // NUKE_DROPPED fires for every player, not just the actor/victim -- pop
   // a brief toast for whoever's watching. Keyed off `nukeEvent.seq` so a
@@ -298,6 +328,28 @@ export default function Game() {
     // Only re-run when a genuinely new event lands, not on every `view` update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nukeEvent?.seq]);
+
+  // BLACKJACK_ROUND_RESOLVED fires once per round, for every player --
+  // pop one toast per bettor outcome (win/loss/push), reusing NukeToast's
+  // exact pattern via BlackjackToast.
+  useEffect(() => {
+    if (!blackjackResolvedEvent || !view) return;
+    const { dealer_id, outcomes } = blackjackResolvedEvent.payload;
+    const dealerName = view.players[dealer_id]?.nickname ?? "The dealer";
+    const newToasts: BlackjackToastItem[] = Object.entries(outcomes).map(([playerId, outcome], i) => {
+      const name = view.players[playerId]?.nickname ?? "A player";
+      const verb =
+        outcome.result === "win" ? "won against" : outcome.result === "loss" ? "lost to" : "pushed with";
+      return { id: blackjackResolvedEvent.seq * 1000 + i, text: `${name} ${verb} ${dealerName}'s blackjack hand.` };
+    });
+    setBlackjackToasts((prev) => [...prev, ...newToasts]);
+    const timer = window.setTimeout(() => {
+      const ids = new Set(newToasts.map((t) => t.id));
+      setBlackjackToasts((prev) => prev.filter((toast) => !ids.has(toast.id)));
+    }, 4000);
+    blackjackToastTimers.current.push(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blackjackResolvedEvent?.seq]);
 
   // Rush mode's auto-roll countdown is derived client-side from
   // settings.rush_roll_interval_seconds + last_dice_roll_ts (see
@@ -414,6 +466,13 @@ export default function Game() {
           .filter((r) => r.player_id === nukeTargetPlayer)
           .map((r) => r.edge_id);
       }
+    } else if (view.phase === "blackjack_round" && blackjackBetStep === "pick_structure") {
+      // Blackjack structure-bet picking: unlike nuke's victim selection,
+      // the bettor stakes one of their OWN pieces -- either kind may be
+      // clicked, so both vertex and edge highlighting are shown at once
+      // (BoardCanvas treats them as fully independent props).
+      legalVertexIds = view.board.buildings.filter((b) => b.player_id === myId).map((b) => b.vertex_id);
+      legalEdgeIds = view.board.roads.filter((r) => r.player_id === myId).map((r) => r.edge_id);
     }
   }
 
@@ -449,11 +508,48 @@ export default function Game() {
     cancelNuke();
   }
 
+  // Blackjack-on-7 bet-placement flow (mirrors startNuke/cancelNuke/
+  // confirmNuke's shape exactly).
+  function startBlackjackResourceBet() {
+    setBlackjackBetStep("resources");
+  }
+
+  function startBlackjackStructureBet() {
+    setBlackjackStructurePick(null);
+    setBlackjackBetStep("pick_structure");
+  }
+
+  function cancelBlackjackBet() {
+    setBlackjackBetStep("idle");
+    setBlackjackStructurePick(null);
+  }
+
+  function submitBlackjackResourceBet(resources: ResourceHand) {
+    wsClient.send({ type: "BLACKJACK_PLACE_BET", payload: { resources } });
+    cancelBlackjackBet();
+  }
+
+  function confirmBlackjackStructureBet() {
+    if (!blackjackStructurePick) return;
+    wsClient.send({ type: "BLACKJACK_PLACE_BET", payload: blackjackStructurePick });
+    cancelBlackjackBet();
+  }
+
+  function declineBlackjack() {
+    wsClient.send({ type: "BLACKJACK_DECLINE", payload: {} });
+    cancelBlackjackBet();
+  }
+
   function handleVertexClick(vertexId: VertexId) {
     if (!view || !myId) return;
     if (nukeStep === "pick_vertex") {
       setNukeTargetVertex(vertexId);
       setNukeStep("pick_edge");
+      return;
+    }
+    if (view.phase === "blackjack_round" && blackjackBetStep === "pick_structure") {
+      setBlackjackStructurePick({ vertex_id: vertexId });
+      setBlackjackBetStep("confirm_structure");
       return;
     }
     if (view.phase === "setup" && isMySetupTurn && mySetupAction === "settlement") {
@@ -474,6 +570,11 @@ export default function Game() {
     if (nukeStep === "pick_edge") {
       setNukeTargetEdge(edgeId);
       setNukeStep("confirm");
+      return;
+    }
+    if (view.phase === "blackjack_round" && blackjackBetStep === "pick_structure") {
+      setBlackjackStructurePick({ edge_id: edgeId });
+      setBlackjackBetStep("confirm_structure");
       return;
     }
     if (view.phase === "setup" && isMySetupTurn && mySetupAction === "road") {
@@ -580,6 +681,38 @@ export default function Game() {
   // mode -- shown to everyone, without blocking anyone else's UI.
   const rushRobberAssigneeId = rushRobberPending?.actor ?? null;
 
+  // Blackjack-on-7 (settings.blackjack_mode): derive the viewer's own
+  // eligibility/turn state from the masked round view, mirroring the
+  // discard/robber-move derivations above.
+  const blackjackRound = view?.blackjack_round ?? null;
+  const myBlackjackEligible = !!(
+    myId &&
+    blackjackRound &&
+    blackjackRound.status === "betting" &&
+    blackjackRound.responses_pending.includes(myId)
+  );
+  const myBlackjackTurn = !!(
+    myId &&
+    blackjackRound &&
+    blackjackRound.status === "bettor_turn" &&
+    blackjackRound.bettor_queue[0] === myId
+  );
+  const myStakeableVertices = view && myId ? view.board.buildings.filter((b) => b.player_id === myId) : [];
+  const myStakeableEdges = view && myId ? view.board.roads.filter((r) => r.player_id === myId) : [];
+  const hasStakeableStructure = myStakeableVertices.length > 0 || myStakeableEdges.length > 0;
+  const blackjackNicknames: Record<PlayerId, string> = view
+    ? Object.fromEntries(Object.values(view.players).map((p) => [p.player_id, p.nickname]))
+    : {};
+  const pendingStructureLabel =
+    view && blackjackStructurePick
+      ? "vertex_id" in blackjackStructurePick
+        ? `your ${
+            view.board.buildings.find((b) => vertexIdKey(b.vertex_id) === vertexIdKey(blackjackStructurePick.vertex_id))
+              ?.building_type ?? "settlement"
+          }`
+        : "your road"
+      : null;
+
   if (!view) {
     return (
       <div>
@@ -598,6 +731,7 @@ export default function Game() {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
       <NukeToast toasts={nukeToasts} />
+      <BlackjackToast toasts={blackjackToasts} />
       <div>
         <h1>Game</h1>
         <p>Room code: {roomCode}</p>
@@ -702,6 +836,39 @@ export default function Game() {
           onConfirm={confirmNuke}
           onCancel={cancelNuke}
         />
+
+        {blackjackRound && (
+          <>
+            <BlackjackHands round={blackjackRound} nicknames={blackjackNicknames} />
+
+            {myBlackjackEligible && (
+              <BlackjackBetPanel
+                step={blackjackBetStep}
+                hand={me?.hand ?? {}}
+                hasStakeableStructure={hasStakeableStructure}
+                pendingStructureLabel={pendingStructureLabel}
+                onStartResources={startBlackjackResourceBet}
+                onStartStructure={startBlackjackStructureBet}
+                onSubmitResources={submitBlackjackResourceBet}
+                onConfirmStructure={confirmBlackjackStructureBet}
+                onCancel={cancelBlackjackBet}
+                onDecline={declineBlackjack}
+              />
+            )}
+
+            {myBlackjackTurn && (
+              <div style={{ border: "2px solid #2f7a3a", padding: 8, margin: "8px 0" }}>
+                <p>Your blackjack turn: hit or stand?</p>
+                <button type="button" onClick={() => wsClient.send({ type: "BLACKJACK_HIT", payload: {} })}>
+                  Hit
+                </button>
+                <button type="button" onClick={() => wsClient.send({ type: "BLACKJACK_STAND", payload: {} })}>
+                  Stand
+                </button>
+              </div>
+            )}
+          </>
+        )}
 
         {canAct && (
           <div style={{ margin: "8px 0" }}>

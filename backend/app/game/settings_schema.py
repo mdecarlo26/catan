@@ -90,6 +90,18 @@ class GameSettings(BaseModel):
     #: candidate-gathering in `rules_engine._apply_move_robber`.
     friendly_robber: bool = False
 
+    #: Enables the "Blackjack-on-7" house rule: after a *dice-roll* 7's
+    #: normal discard -> move-robber -> steal sequence fully resolves,
+    #: the roller (dealer) hosts an opt-in standard-rules blackjack round
+    #: against any other connected player before play returns to
+    #: `Phase.MAIN`. See `app.game.state.Phase.BLACKJACK_ROUND`,
+    #: `GameState.blackjack_round`, and `app.game.rules.blackjack` for
+    #: the full mechanics. Always inapplicable while `rush_mode` is on --
+    #: rush mode has no single "current player" to be dealer -- mirroring
+    #: `special_build_phase`'s same rush-mode short-circuit (see
+    #: `rules_engine._maybe_enter_blackjack_round`).
+    blackjack_mode: bool = False
+
     #: Seconds a turn may sit idle (no action from the current player)
     #: before the stalled-turn timer force-ends it -- see
     #: `app.game.rules.turn_timer.should_force_end_turn`, wired up by
@@ -209,6 +221,17 @@ SETTINGS_REGISTRY: list[SettingFieldMeta] = [
         description=(
             "Friendly robber: moving the robber still blocks a hex's "
             "production, but never steals a card."
+        ),
+    ),
+    SettingFieldMeta(
+        key="blackjack_mode",
+        type=SettingFieldType.BOOL,
+        default=False,
+        description=(
+            "Blackjack-on-7: after a rolled 7's discard/robber/steal "
+            "sequence resolves, the roller deals an opt-in blackjack "
+            "round against any other connected player. Inapplicable in "
+            "rush mode."
         ),
     ),
     SettingFieldMeta(

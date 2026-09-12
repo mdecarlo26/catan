@@ -48,7 +48,14 @@ from app.game.board import (
 )
 from app.game.players import DevCardType, ResourceHand, ResourceType
 from app.game.settings_schema import GameSettings
-from app.game.state import AwaitingDiscard, PendingAction, Phase, RushRobberPending
+from app.game.state import (
+    AwaitingDiscard,
+    BlackjackStake,
+    Card,
+    PendingAction,
+    Phase,
+    RushRobberPending,
+)
 
 
 class EventType(str, Enum):
@@ -71,6 +78,12 @@ class EventType(str, Enum):
     TRADE_RESOLVED = "TRADE_RESOLVED"
     DEV_CARD_COUNT_CHANGED = "DEV_CARD_COUNT_CHANGED"
     NUKE_DROPPED = "NUKE_DROPPED"
+    BLACKJACK_ROUND_STARTED = "BLACKJACK_ROUND_STARTED"
+    BLACKJACK_BET_PLACED = "BLACKJACK_BET_PLACED"
+    BLACKJACK_BET_DECLINED = "BLACKJACK_BET_DECLINED"
+    BLACKJACK_HAND_UPDATED = "BLACKJACK_HAND_UPDATED"
+    BLACKJACK_DEALER_REVEALED = "BLACKJACK_DEALER_REVEALED"
+    BLACKJACK_ROUND_RESOLVED = "BLACKJACK_ROUND_RESOLVED"
     LONGEST_ROAD_CHANGED = "LONGEST_ROAD_CHANGED"
     LARGEST_ARMY_CHANGED = "LARGEST_ARMY_CHANGED"
     TURN_TIMER_EXPIRED = "TURN_TIMER_EXPIRED"
@@ -160,6 +173,48 @@ class WireBoardView(BaseModel):
     robber_hex: HexCoord
 
 
+class BlackjackParticipantView(BaseModel):
+    """One bettor's public state within `BlackjackRoundView`. Always
+    fully visible to every player -- per the plan, all bettors' hands are
+    public at a real table; only the dealer's hole card is ever hidden
+    (see `BlackjackRoundView.dealer_hole_card`).
+    """
+
+    stake: BlackjackStake
+    hand: list[Card]
+    status: Literal["playing", "stood", "busted"]
+
+
+class BlackjackRoundView(BaseModel):
+    """Masked wire view of `app.game.state.BlackjackRoundState`, built by
+    `app.serialization.to_client_view` -- identical for every recipient
+    (nobody's own bet/hand needs unmasking the way `MaskedPlayerView`
+    does), except that the dealer's hole card is never included before
+    `dealer_hole_card_revealed`. The round's `deck` is never exposed at
+    all -- card order/remaining composition would let a client predict
+    future draws.
+    """
+
+    dealer_id: PlayerId
+    #: The dealer's first-dealt card -- always visible once dealt.
+    #: `None` only while `status == "betting"` (nobody's been dealt yet).
+    dealer_up_card: Card | None
+    #: The dealer's second (hole) card. `None` until
+    #: `dealer_hole_card_revealed` is `True`, at which point it's the
+    #: dealer's actual final second card (auto-play may have added more
+    #: cards beyond it -- see `dealer_hand` below).
+    dealer_hole_card: Card | None
+    dealer_hole_card_revealed: bool
+    #: The dealer's full hand, revealed-and-auto-played. Empty until
+    #: `dealer_hole_card_revealed` -- before that, `dealer_up_card` /
+    #: `dealer_hole_card` above are the only dealer card info exposed.
+    dealer_hand: list[Card]
+    status: Literal["betting", "bettor_turn"]
+    responses_pending: list[PlayerId]
+    participants: dict[PlayerId, BlackjackParticipantView]
+    bettor_queue: list[PlayerId]
+
+
 class ClientGameStateView(BaseModel):
     """The masked, per-recipient view of `app.game.state.GameState`
     produced by `app.game.serialization.to_client_view()`. Opponents'
@@ -193,6 +248,12 @@ class ClientGameStateView(BaseModel):
     #: see its docstring for why this (not `current_player_index`) is
     #: what conveys "whose special build turn is it" to clients.
     special_build_queue: list[PlayerId] = Field(default_factory=list)
+
+    #: While `phase == "blackjack_round"`: the masked view of
+    #: `app.game.state.GameState.blackjack_round` (dealer's hole card
+    #: hidden until reveal, deck never exposed). `None` at every other
+    #: phase. See `BlackjackRoundView`.
+    blackjack_round: BlackjackRoundView | None = None
 
     #: Rush-mode-only concurrent obligations -- mirror
     #: `app.game.state.GameState.rush_pending_discard` /
@@ -372,6 +433,66 @@ class NukeDroppedPayload(BaseModel):
     destroyed_edge: EdgeId
 
 
+class BlackjackRoundStartedPayload(BaseModel):
+    """A dice-roll 7's blackjack round has opened for betting. Also
+    conveys the eligible bettor list (every other connected, seated
+    player at the moment the round started) -- there's no separate
+    "bets open" event; this doubles as that announcement.
+    """
+
+    dealer_id: PlayerId
+    eligible_player_ids: list[PlayerId]
+
+
+class BlackjackBetPlacedPayload(BaseModel):
+    player_id: PlayerId
+    stake: BlackjackStake
+
+
+class BlackjackBetDeclinedPayload(BaseModel):
+    player_id: PlayerId
+
+
+class BlackjackHandUpdatedPayload(BaseModel):
+    """A bettor's hand changed from a `BLACKJACK_HIT`. Never used for the
+    dealer (whose hand is only ever announced via `BLACKJACK_DEALER_REVEALED`,
+    and whose interim up-card is conveyed by the next `STATE_SNAPSHOT`'s
+    `BlackjackRoundView`, not a dedicated event).
+    """
+
+    player_id: PlayerId
+    hand: list[Card]
+    status: Literal["playing", "stood", "busted"]
+
+
+class BlackjackDealerRevealedPayload(BaseModel):
+    dealer_id: PlayerId
+    dealer_hand: list[Card]
+    dealer_total: int
+    dealer_busted: bool
+
+
+class BlackjackOutcome(BaseModel):
+    result: Literal["win", "loss", "push"]
+    stake: BlackjackStake
+    final_hand: list[Card]
+    final_total: int
+    busted: bool
+
+
+class BlackjackRoundResolvedPayload(BaseModel):
+    """Per-bettor final outcome + the dealer's final hand, for the
+    round-resolution toast/log. Emitted once, right before `Phase.MAIN`
+    resumes.
+    """
+
+    dealer_id: PlayerId
+    dealer_hand: list[Card]
+    dealer_total: int
+    dealer_busted: bool
+    outcomes: dict[PlayerId, BlackjackOutcome]
+
+
 class LongestRoadChangedPayload(BaseModel):
     new_holder: PlayerId | None
     previous_holder: PlayerId | None
@@ -506,6 +627,36 @@ class NukeDroppedEvent(_EventEnvelopeBase):
     payload: NukeDroppedPayload
 
 
+class BlackjackRoundStartedEvent(_EventEnvelopeBase):
+    type: Literal[EventType.BLACKJACK_ROUND_STARTED] = EventType.BLACKJACK_ROUND_STARTED
+    payload: BlackjackRoundStartedPayload
+
+
+class BlackjackBetPlacedEvent(_EventEnvelopeBase):
+    type: Literal[EventType.BLACKJACK_BET_PLACED] = EventType.BLACKJACK_BET_PLACED
+    payload: BlackjackBetPlacedPayload
+
+
+class BlackjackBetDeclinedEvent(_EventEnvelopeBase):
+    type: Literal[EventType.BLACKJACK_BET_DECLINED] = EventType.BLACKJACK_BET_DECLINED
+    payload: BlackjackBetDeclinedPayload
+
+
+class BlackjackHandUpdatedEvent(_EventEnvelopeBase):
+    type: Literal[EventType.BLACKJACK_HAND_UPDATED] = EventType.BLACKJACK_HAND_UPDATED
+    payload: BlackjackHandUpdatedPayload
+
+
+class BlackjackDealerRevealedEvent(_EventEnvelopeBase):
+    type: Literal[EventType.BLACKJACK_DEALER_REVEALED] = EventType.BLACKJACK_DEALER_REVEALED
+    payload: BlackjackDealerRevealedPayload
+
+
+class BlackjackRoundResolvedEvent(_EventEnvelopeBase):
+    type: Literal[EventType.BLACKJACK_ROUND_RESOLVED] = EventType.BLACKJACK_ROUND_RESOLVED
+    payload: BlackjackRoundResolvedPayload
+
+
 class LongestRoadChangedEvent(_EventEnvelopeBase):
     type: Literal[EventType.LONGEST_ROAD_CHANGED] = EventType.LONGEST_ROAD_CHANGED
     payload: LongestRoadChangedPayload
@@ -552,6 +703,12 @@ ServerEvent: TypeAlias = Annotated[
     | TradeResolvedEvent
     | DevCardCountChangedEvent
     | NukeDroppedEvent
+    | BlackjackRoundStartedEvent
+    | BlackjackBetPlacedEvent
+    | BlackjackBetDeclinedEvent
+    | BlackjackHandUpdatedEvent
+    | BlackjackDealerRevealedEvent
+    | BlackjackRoundResolvedEvent
     | LongestRoadChangedEvent
     | LargestArmyChangedEvent
     | TurnTimerExpiredEvent

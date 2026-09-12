@@ -40,7 +40,7 @@ import random
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Literal
 
 from pydantic import BaseModel
 
@@ -49,6 +49,7 @@ from app.game import dev_cards, scoring
 from app.game.actions import (
     ActionType,
     BankTradePayload,
+    BlackjackPlaceBetPayload,
     BuildCityPayload,
     BuildRoadPayload,
     BuildSettlementPayload,
@@ -72,17 +73,26 @@ from app.game.board import (
     VertexId,
 )
 from app.game.players import DevCardType, ResourceHand, ResourceType
-from app.game.rules import nuke_mode, robber_strategies, setup_strategies
+from app.game.rules import blackjack, nuke_mode, robber_strategies, setup_strategies
 from app.game.state import (
     AwaitingDiscard,
     AwaitingRobberPlacement,
     AwaitingSteal,
     AwaitingTradeResponse,
+    BlackjackRoundState,
+    BlackjackStake,
     GameState,
     Phase,
 )
 from app.game import turn_state_machine
 from app.protocol.events import (
+    BlackjackBetDeclinedPayload,
+    BlackjackBetPlacedPayload,
+    BlackjackDealerRevealedPayload,
+    BlackjackHandUpdatedPayload,
+    BlackjackOutcome,
+    BlackjackRoundResolvedPayload,
+    BlackjackRoundStartedPayload,
     DevCardCountChangedPayload,
     DiceRolledPayload,
     DiscardRequiredPayload,
@@ -1169,6 +1179,10 @@ def _robber_move_and_gather_steal_candidates(
 
 
 def _apply_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRobberPayload) -> list[RuleEvent]:
+    pending_before = state.rush_pending_robber if state.settings.rush_mode else state.pending
+    assert isinstance(pending_before, AwaitingRobberPlacement)
+    reason = pending_before.reason
+
     events, candidates = _robber_move_and_gather_steal_candidates(state, actor_id, payload.hex)
 
     resolved_steal_event: RuleEvent | None = None
@@ -1181,7 +1195,7 @@ def _apply_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRobber
                 ResourceStolenPayload(actor=actor_id, victim=candidates[0], resource=stolen),
             )
         else:
-            next_pending = AwaitingSteal(actor=actor_id, candidate_targets=candidates)
+            next_pending = AwaitingSteal(actor=actor_id, candidate_targets=candidates, reason=reason)
 
     if resolved_steal_event is not None:
         events.append(resolved_steal_event)
@@ -1189,14 +1203,22 @@ def _apply_move_robber(state: GameState, actor_id: PlayerId, payload: MoveRobber
     if state.settings.rush_mode:
         # Stays in Phase.MAIN throughout -- only `actor_id` is
         # blocked (via rush_pending_robber, see _require_rush_unblocked),
-        # not the whole game.
+        # not the whole game. Blackjack is never offered in rush mode --
+        # see _maybe_enter_blackjack_round -- so this branch never needs
+        # to consider it.
         state.rush_pending_robber = next_pending
     else:
         state.pending = next_pending
-        state.phase = Phase.MAIN if next_pending is None else Phase.ROBBER_MOVE
-        # (Phase.ROBBER_MOVE is a no-op re-assignment when next_pending is
-        # already an AwaitingSteal set from this same call -- state.phase
-        # was already ROBBER_MOVE per the phase table's MOVE_ROBBER gate.)
+        if next_pending is None:
+            # The robber-move/steal sequence has fully resolved (0 or 1
+            # steal candidates) -- this is the exact point that would
+            # normally return to Phase.MAIN. Offer blackjack first if
+            # applicable; either way this sets state.phase.
+            events.extend(_maybe_enter_blackjack_round(state, dealer_id=actor_id, reason=reason))
+        else:
+            state.phase = Phase.ROBBER_MOVE
+            # (Phase.ROBBER_MOVE is a no-op re-assignment here -- state.phase
+            # was already ROBBER_MOVE per the phase table's MOVE_ROBBER gate.)
 
     events.extend(_check_win_condition(state))
     return events
@@ -1213,19 +1235,356 @@ def _validate_steal_resource(state: GameState, actor_id: PlayerId, payload: Stea
 
 
 def _apply_steal_resource(state: GameState, actor_id: PlayerId, payload: StealResourcePayload) -> list[RuleEvent]:
+    pending = state.rush_pending_robber if state.settings.rush_mode else state.pending
+    assert isinstance(pending, AwaitingSteal)
+    reason = pending.reason
+
     stolen = robber_strategies.normal_steal(state.players, actor_id, payload.target_player_id)
-    if state.settings.rush_mode:
-        state.rush_pending_robber = None
-    else:
-        state.pending = None
-        state.phase = Phase.MAIN
     events = [
         _event(
             EventType.RESOURCE_STOLEN,
             ResourceStolenPayload(actor=actor_id, victim=payload.target_player_id, resource=stolen),
         )
     ]
+
+    if state.settings.rush_mode:
+        state.rush_pending_robber = None
+    else:
+        state.pending = None
+        # This is the exact point that would normally return to
+        # Phase.MAIN once the (multi-candidate) steal resolves -- see
+        # _apply_move_robber's identical call for the 0/1-candidate path.
+        events.extend(_maybe_enter_blackjack_round(state, dealer_id=actor_id, reason=reason))
+
     events.extend(_check_win_condition(state))
+    return events
+
+
+# ---------------------------------------------------------------------
+# Blackjack-on-7 (settings.blackjack_mode)
+# ---------------------------------------------------------------------
+
+
+def _blackjack_eligible_bettors(state: GameState, dealer_id: PlayerId) -> list[PlayerId]:
+    """Every other seated, connected player, in seat/turn order -- "any
+    other connected player may opt in" per the plan."""
+    return [
+        pid
+        for pid in state.turn_order
+        if pid != dealer_id and state.players[pid].is_connected
+    ]
+
+
+def _maybe_enter_blackjack_round(
+    state: GameState, dealer_id: PlayerId, reason: Literal["dice_roll", "knight_card"]
+) -> list[RuleEvent]:
+    """Called at the exact point the post-robber sequence would normally
+    set `state.phase = Phase.MAIN` (see this function's two call sites in
+    `_apply_move_robber` / `_apply_steal_resource`). Always sets
+    `state.phase` itself -- callers never separately assign `Phase.MAIN`
+    on this path.
+
+    Per the plan: blackjack is only ever offered for a *dice-roll* 7 (a
+    Knight-triggered robber move has no "roll" to attach a dealer to --
+    `reason == "knight_card"` always skips this), only when
+    `settings.blackjack_mode` is on, and never in rush mode (no single
+    "current player"/dealer concept there -- structurally unreachable
+    from `_apply_move_robber`'s rush branch anyway, but checked directly
+    here too for the same "safe to call from anywhere" reasoning as
+    `_effective_special_build_phase`). Also a no-op (straight to MAIN) if
+    there's nobody currently connected to even offer a bet to.
+    """
+    if reason != "dice_roll" or not state.settings.blackjack_mode or state.settings.rush_mode:
+        state.phase = Phase.MAIN
+        return []
+
+    eligible = _blackjack_eligible_bettors(state, dealer_id)
+    if not eligible:
+        state.phase = Phase.MAIN
+        return []
+
+    state.phase = Phase.BLACKJACK_ROUND
+    state.blackjack_round = BlackjackRoundState(dealer_id=dealer_id, responses_pending=eligible)
+    return [
+        _event(
+            EventType.BLACKJACK_ROUND_STARTED,
+            BlackjackRoundStartedPayload(dealer_id=dealer_id, eligible_player_ids=eligible),
+        )
+    ]
+
+
+def _close_blackjack_betting(state: GameState) -> list[RuleEvent]:
+    """Called once `blackjack_round.responses_pending` empties (everyone
+    answered, or the stalled-turn timer force-declined the rest -- see
+    `app.api.websocket._force_advance_stalled_blackjack`). Either aborts
+    the round back to `Phase.MAIN` with no cards dealt (nobody bet, per
+    the plan's explicit no-op case) or deals the dealer + every
+    participant two cards and starts the bettor-turn queue walk.
+
+    Betting-window completion policy: this codebase reuses the
+    `turn_timer_seconds` stalled-turn-timer pattern (see
+    `app.api.websocket`) for "don't let one idle player freeze the
+    round" rather than a separate timed window -- betting itself closes
+    via this simpler, deterministic "everyone has explicitly responded"
+    check, which is easier to reason about/test than a wall-clock
+    window and needs no extra setting. This is a documented
+    implementation-level call the plan left open ("a simpler explicit
+    ... completion check if that's simpler to get right").
+    """
+    round_ = state.blackjack_round
+    assert round_ is not None
+
+    if not round_.participants:
+        state.phase = Phase.MAIN
+        state.blackjack_round = None
+        return []
+
+    round_.deck = blackjack.build_shuffled_deck()
+    # Deal order (a documented simplification of a real table's
+    # alternating one-card-at-a-time deal, which makes no mathematical
+    # difference against a freshly shuffled deck): the dealer's two cards
+    # first, then each bettor's two cards in turn_order -- not
+    # interleaved. See test_blackjack.py's
+    # test_full_round_queue_order_and_all_payout_outcomes for the exact
+    # draw sequence this produces.
+    round_.dealer_hand = [blackjack.draw_card(round_.deck), blackjack.draw_card(round_.deck)]
+    # Seat-order queue, mirroring special_build_queue's shape exactly.
+    round_.bettor_queue = [pid for pid in state.turn_order if pid in round_.participants]
+    for bettor_id in round_.bettor_queue:
+        round_.participants[bettor_id].hand = [
+            blackjack.draw_card(round_.deck), blackjack.draw_card(round_.deck)
+        ]
+    round_.status = "bettor_turn"
+    return []
+
+
+def _advance_blackjack_queue_or_resolve(state: GameState) -> list[RuleEvent]:
+    round_ = state.blackjack_round
+    assert round_ is not None
+    if round_.bettor_queue:
+        return []
+    return _resolve_blackjack_round(state)
+
+
+def _resolve_blackjack_round(state: GameState) -> list[RuleEvent]:
+    """Once every participant has stood or busted: reveal + auto-play the
+    dealer's hand, resolve every participant's payout, then return to
+    Phase.MAIN and clear `blackjack_round`. All synchronous, in one
+    `apply()` call -- see `BlackjackRoundState`'s docstring.
+    """
+    round_ = state.blackjack_round
+    assert round_ is not None
+    dealer_id = round_.dealer_id
+
+    blackjack.play_dealer_hand(round_.deck, round_.dealer_hand)
+    round_.dealer_hole_card_revealed = True
+    dealer_total = blackjack.hand_value(round_.dealer_hand)
+    dealer_busted = blackjack.is_bust(round_.dealer_hand)
+
+    events: list[RuleEvent] = [
+        _event(
+            EventType.BLACKJACK_DEALER_REVEALED,
+            BlackjackDealerRevealedPayload(
+                dealer_id=dealer_id,
+                dealer_hand=list(round_.dealer_hand),
+                dealer_total=dealer_total,
+                dealer_busted=dealer_busted,
+            ),
+        )
+    ]
+
+    outcomes: dict[PlayerId, BlackjackOutcome] = {}
+    road_removed = False
+    for bettor_id, participant in round_.participants.items():
+        bettor_total = blackjack.hand_value(participant.hand)
+        bettor_busted = participant.status == "busted"
+        result = blackjack.resolve_outcome(bettor_total, bettor_busted, dealer_total, dealer_busted)
+        blackjack.resolve_stake_payout(state, dealer_id, bettor_id, participant.stake, result)
+        if participant.stake.kind == "road" and result == "loss":
+            road_removed = True
+        outcomes[bettor_id] = BlackjackOutcome(
+            result=result,
+            stake=participant.stake,
+            final_hand=list(participant.hand),
+            final_total=bettor_total,
+            busted=bettor_busted,
+        )
+
+    events.append(
+        _event(
+            EventType.BLACKJACK_ROUND_RESOLVED,
+            BlackjackRoundResolvedPayload(
+                dealer_id=dealer_id,
+                dealer_hand=list(round_.dealer_hand),
+                dealer_total=dealer_total,
+                dealer_busted=dealer_busted,
+                outcomes=outcomes,
+            ),
+        )
+    )
+
+    if road_removed:
+        # Full recompute across all players, mirroring PLAY_NUKE's road
+        # removal -- breaking one player's road segment can affect
+        # anyone's longest-road length. This also recomputes VP.
+        scoring.recompute_longest_road(state)
+    scoring.recompute_victory_points(state)
+
+    state.phase = Phase.MAIN
+    state.blackjack_round = None
+    events.extend(_check_win_condition(state))
+    return events
+
+
+def _validate_blackjack_place_bet(
+    state: GameState, actor_id: PlayerId, payload: BlackjackPlaceBetPayload
+) -> None:
+    round_ = state.blackjack_round
+    if round_ is None or round_.status != "betting":
+        raise RuleViolation("no_blackjack_betting", "No blackjack betting window is open.")
+    if actor_id not in round_.responses_pending:
+        raise RuleViolation(
+            "not_eligible", "You are not eligible to bet in this round (or already responded)."
+        )
+
+    provided = [
+        value for value in (payload.resources, payload.vertex_id, payload.edge_id) if value is not None
+    ]
+    if len(provided) != 1:
+        raise RuleViolation(
+            "invalid_bet", "Exactly one of resources/vertex_id/edge_id must be given."
+        )
+
+    if payload.resources is not None:
+        total = sum(amount for amount in payload.resources.values() if amount > 0)
+        if total <= 0:
+            raise RuleViolation("invalid_bet", "Must bet at least one resource card.")
+        if not _has_resources(state.players[actor_id].hand, payload.resources):
+            raise RuleViolation(
+                "insufficient_resources", "You don't hold the resources you're trying to bet."
+            )
+    elif payload.vertex_id is not None:
+        building = state.board.buildings.get(payload.vertex_id)
+        if building is None or building.player_id != actor_id:
+            raise RuleViolation("invalid_target", "You don't own a settlement/city there.")
+    else:
+        if state.board.roads.get(payload.edge_id) != actor_id:
+            raise RuleViolation("invalid_target", "You don't own a road there.")
+
+
+def _apply_blackjack_place_bet(
+    state: GameState, actor_id: PlayerId, payload: BlackjackPlaceBetPayload
+) -> list[RuleEvent]:
+    round_ = state.blackjack_round
+    assert round_ is not None
+    round_.responses_pending.remove(actor_id)
+
+    if payload.resources is not None:
+        stake = BlackjackStake(
+            kind="resources",
+            resources={r: a for r, a in payload.resources.items() if a > 0},
+        )
+    else:
+        kind = blackjack.stake_kind_for_bet(state, payload.vertex_id, payload.edge_id)
+        stake = BlackjackStake(kind=kind, vertex_id=payload.vertex_id, edge_id=payload.edge_id)
+
+    round_.participants[actor_id] = blackjack.new_participant(stake)
+    events: list[RuleEvent] = [
+        _event(
+            EventType.BLACKJACK_BET_PLACED,
+            BlackjackBetPlacedPayload(player_id=actor_id, stake=stake),
+        )
+    ]
+    if not round_.responses_pending:
+        events.extend(_close_blackjack_betting(state))
+    return events
+
+
+def _validate_blackjack_decline(state: GameState, actor_id: PlayerId, payload) -> None:
+    round_ = state.blackjack_round
+    if round_ is None or round_.status != "betting":
+        raise RuleViolation("no_blackjack_betting", "No blackjack betting window is open.")
+    if actor_id not in round_.responses_pending:
+        raise RuleViolation(
+            "not_eligible", "You are not eligible to respond in this round (or already responded)."
+        )
+
+
+def _apply_blackjack_decline(state: GameState, actor_id: PlayerId, payload) -> list[RuleEvent]:
+    round_ = state.blackjack_round
+    assert round_ is not None
+    round_.responses_pending.remove(actor_id)
+    events: list[RuleEvent] = [
+        _event(EventType.BLACKJACK_BET_DECLINED, BlackjackBetDeclinedPayload(player_id=actor_id))
+    ]
+    if not round_.responses_pending:
+        events.extend(_close_blackjack_betting(state))
+    return events
+
+
+def _validate_blackjack_turn(state: GameState, actor_id: PlayerId) -> BlackjackRoundState:
+    round_ = state.blackjack_round
+    if round_ is None or round_.status != "bettor_turn":
+        raise RuleViolation(
+            "no_blackjack_turn", "No blackjack hand is waiting on a hit/stand decision."
+        )
+    if not round_.bettor_queue or actor_id != round_.bettor_queue[0]:
+        raise RuleViolation("not_your_turn", "It is not your blackjack turn.")
+    return round_
+
+
+def _validate_blackjack_hit(state: GameState, actor_id: PlayerId, payload) -> None:
+    _validate_blackjack_turn(state, actor_id)
+
+
+def _apply_blackjack_hit(state: GameState, actor_id: PlayerId, payload) -> list[RuleEvent]:
+    round_ = state.blackjack_round
+    assert round_ is not None
+    participant = round_.participants[actor_id]
+    participant.hand.append(blackjack.draw_card(round_.deck))
+
+    events: list[RuleEvent]
+    if blackjack.is_bust(participant.hand):
+        participant.status = "busted"
+        round_.bettor_queue.pop(0)
+        events = [
+            _event(
+                EventType.BLACKJACK_HAND_UPDATED,
+                BlackjackHandUpdatedPayload(
+                    player_id=actor_id, hand=list(participant.hand), status="busted"
+                ),
+            )
+        ]
+        events.extend(_advance_blackjack_queue_or_resolve(state))
+    else:
+        events = [
+            _event(
+                EventType.BLACKJACK_HAND_UPDATED,
+                BlackjackHandUpdatedPayload(
+                    player_id=actor_id, hand=list(participant.hand), status="playing"
+                ),
+            )
+        ]
+    return events
+
+
+def _validate_blackjack_stand(state: GameState, actor_id: PlayerId, payload) -> None:
+    _validate_blackjack_turn(state, actor_id)
+
+
+def _apply_blackjack_stand(state: GameState, actor_id: PlayerId, payload) -> list[RuleEvent]:
+    round_ = state.blackjack_round
+    assert round_ is not None
+    participant = round_.participants[actor_id]
+    participant.status = "stood"
+    round_.bettor_queue.pop(0)
+    events: list[RuleEvent] = [
+        _event(
+            EventType.BLACKJACK_HAND_UPDATED,
+            BlackjackHandUpdatedPayload(player_id=actor_id, hand=list(participant.hand), status="stood"),
+        )
+    ]
+    events.extend(_advance_blackjack_queue_or_resolve(state))
     return events
 
 
@@ -1427,6 +1786,10 @@ VALIDATORS: dict[ActionType, _Validator] = {
     ActionType.STEAL_RESOURCE: _validate_steal_resource,
     ActionType.DISCARD_CARDS: _validate_discard_cards,
     ActionType.PLAY_NUKE: _validate_play_nuke,
+    ActionType.BLACKJACK_PLACE_BET: _validate_blackjack_place_bet,
+    ActionType.BLACKJACK_DECLINE: _validate_blackjack_decline,
+    ActionType.BLACKJACK_HIT: _validate_blackjack_hit,
+    ActionType.BLACKJACK_STAND: _validate_blackjack_stand,
     ActionType.END_TURN: _validate_end_turn,
 }
 
@@ -1445,6 +1808,10 @@ APPLIERS: dict[ActionType, _Applier] = {
     ActionType.STEAL_RESOURCE: _apply_steal_resource,
     ActionType.DISCARD_CARDS: _apply_discard_cards,
     ActionType.PLAY_NUKE: _apply_play_nuke,
+    ActionType.BLACKJACK_PLACE_BET: _apply_blackjack_place_bet,
+    ActionType.BLACKJACK_DECLINE: _apply_blackjack_decline,
+    ActionType.BLACKJACK_HIT: _apply_blackjack_hit,
+    ActionType.BLACKJACK_STAND: _apply_blackjack_stand,
     ActionType.END_TURN: _apply_end_turn,
 }
 

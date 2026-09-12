@@ -118,6 +118,22 @@ ALLOWED_ACTIONS: dict[Phase, frozenset[ActionType]] = {
             ActionType.LEAVE_ROOM,
         }
     ),
+    Phase.BLACKJACK_ROUND: frozenset(
+        {
+            # Whoever may currently act (an eligible bettor during
+            # `status == "betting"`, or `bettor_queue[0]` during
+            # `status == "bettor_turn"` -- see `GameState.blackjack_round`)
+            # is further narrowed by `rules_engine`'s rule-specific
+            # validators, exactly like `Phase.ROBBER_MOVE`'s
+            # MOVE_ROBBER/STEAL_RESOURCE pair above. No building/trading/
+            # dev cards/dice during this house-rule side round.
+            ActionType.BLACKJACK_PLACE_BET,
+            ActionType.BLACKJACK_DECLINE,
+            ActionType.BLACKJACK_HIT,
+            ActionType.BLACKJACK_STAND,
+            ActionType.LEAVE_ROOM,
+        }
+    ),
     Phase.GAME_OVER: frozenset(
         {
             ActionType.LEAVE_ROOM,

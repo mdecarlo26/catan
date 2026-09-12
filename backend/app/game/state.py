@@ -12,9 +12,9 @@ needs to know, not what's safe to reveal to a given client.
 from enum import Enum
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.game.board import Board, PlayerId
+from app.game.board import Board, EdgeId, PlayerId, VertexId
 from app.game.players import DevCardType, PlayerState, ResourceHand, ResourceType
 from app.game.settings_schema import GameSettings
 
@@ -48,6 +48,16 @@ class Phase(str, Enum):
     #: dev cards) before `current_player_index` actually advances. See
     #: `GameState.special_build_queue`.
     SPECIAL_BUILD = "special_build"
+    #: House rule (`settings.blackjack_mode`): inserted right after the
+    #: normal post-7 discard -> move-robber -> steal sequence fully
+    #: resolves, in place of the immediate return to `Phase.MAIN` --
+    #: exactly the same "new inserted sub-phase, gated by its own queue
+    #: field" shape as `SPECIAL_BUILD`. See `GameState.blackjack_round`
+    #: and the plan's "Workstream 2: Blackjack-on-7 Mode" section for the
+    #: full rule set. Never entered while `settings.rush_mode` is on (no
+    #: single "current player" to be dealer) or for a Knight-triggered
+    #: robber move (only a *dice-roll* 7 offers blackjack).
+    BLACKJACK_ROUND = "blackjack_round"
     #: `victory_points_target` reached; game frozen for the post-game
     #: summary until the room's TTL sweep evicts it.
     GAME_OVER = "game_over"
@@ -91,6 +101,13 @@ class AwaitingSteal(BaseModel):
     #: least one resource card. Empty means the steal auto-resolves to a
     #: no-op.
     candidate_targets: list[PlayerId]
+    #: Carried over from the `AwaitingRobberPlacement` that preceded this
+    #: steal, since blackjack-on-7 (`settings.blackjack_mode`) must only
+    #: ever trigger for a *dice-roll* 7, never a Knight-triggered robber
+    #: move -- and by the time a multi-candidate steal is being resolved,
+    #: the original `AwaitingRobberPlacement.reason` would otherwise be
+    #: lost. See `rules_engine._maybe_enter_blackjack_round`'s call sites.
+    reason: Literal["dice_roll", "knight_card"]
 
 
 class AwaitingTradeResponse(BaseModel):
@@ -137,6 +154,134 @@ RushRobberPending: TypeAlias = Annotated[
     AwaitingRobberPlacement | AwaitingSteal,
     Field(discriminator="kind"),
 ]
+
+
+class CardSuit(str, Enum):
+    """Suit of a standard playing card. Irrelevant to blackjack scoring
+    (only `CardRank` matters for hand value) but carried on the wire for
+    a real-looking card display."""
+
+    SPADES = "spades"
+    HEARTS = "hearts"
+    DIAMONDS = "diamonds"
+    CLUBS = "clubs"
+
+
+class CardRank(str, Enum):
+    """Rank of a standard playing card. Value string doubles as the pip
+    count for number cards (`"2"`.."10"`) -- see
+    `app.game.rules.blackjack.hand_value` for ace (11-or-1) and face-card
+    (10) handling."""
+
+    ACE = "A"
+    TWO = "2"
+    THREE = "3"
+    FOUR = "4"
+    FIVE = "5"
+    SIX = "6"
+    SEVEN = "7"
+    EIGHT = "8"
+    NINE = "9"
+    TEN = "10"
+    JACK = "J"
+    QUEEN = "Q"
+    KING = "K"
+
+
+class Card(BaseModel):
+    """One playing card, for `settings.blackjack_mode`'s standard 52-card
+    deck (`app.game.rules.blackjack.build_shuffled_deck`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rank: CardRank
+    suit: CardSuit
+
+
+class BlackjackStake(BaseModel):
+    """What a bettor put up for one blackjack round, per the plan's two
+    stake kinds. Exactly one of `resources` / `vertex_id` / `edge_id` is
+    populated, matching `kind`:
+      - `"resources"`: a subset of the bettor's hand at bet time.
+      - `"settlement"` / `"city"`: one of the bettor's own buildings
+        (`vertex_id`), resolved to this concrete kind from
+        `Board.buildings` at bet-placement time.
+      - `"road"`: one of the bettor's own roads (`edge_id`).
+
+    Deliberately public (not masked anywhere) -- placing a bet is treated
+    as a public table commitment, like a `PROPOSE_TRADE` offer, not
+    hidden information; only the dealer's hole card is ever hidden. See
+    `app.game.rules_engine._validate_blackjack_place_bet` for the
+    ownership/affordability checks made before this is constructed.
+    """
+
+    kind: Literal["resources", "settlement", "city", "road"]
+    resources: ResourceHand | None = None
+    vertex_id: VertexId | None = None
+    edge_id: EdgeId | None = None
+
+
+class BlackjackParticipant(BaseModel):
+    """One bettor's state for the current blackjack round."""
+
+    stake: BlackjackStake
+    hand: list[Card] = Field(default_factory=list)
+    status: Literal["playing", "stood", "busted"] = "playing"
+
+
+class BlackjackRoundState(BaseModel):
+    """`GameState.blackjack_round` -- populated only while `phase ==
+    Phase.BLACKJACK_ROUND`. See that phase's docstring and the plan's
+    "Workstream 2: Blackjack-on-7 Mode" section for the full rule set.
+
+    Lifecycle: created with `status == "betting"` the moment the round
+    starts, with every other connected, seated player listed in
+    `responses_pending`. Each may `BLACKJACK_PLACE_BET` or
+    `BLACKJACK_DECLINE` exactly once; once `responses_pending` empties
+    (everyone answered, or the stalled-turn timer force-declined the
+    rest -- see `app.api.websocket._force_advance_stalled_blackjack`),
+    `rules_engine._close_blackjack_betting` either aborts the whole round
+    back to `Phase.MAIN` (nobody bet) or shuffles `deck`, deals the
+    dealer and every participant two cards, builds `bettor_queue` in seat
+    order, and flips `status` to `"bettor_turn"`. `bettor_queue[0]` may
+    then `BLACKJACK_HIT`/`BLACKJACK_STAND` until they stand or bust (same
+    queue-walk shape as `GameState.special_build_queue`), advancing the
+    queue each time. Once `bettor_queue` empties, `rules_engine` reveals
+    and auto-plays the dealer's hand and resolves every participant's
+    payout synchronously in that same `apply()` call, then returns
+    `GameState.phase` to `Phase.MAIN` and clears this field back to
+    `None` -- there is no separate persisted "dealer turn" / "resolved"
+    status to wait on.
+    """
+
+    dealer_id: PlayerId
+    dealer_hand: list[Card] = Field(default_factory=list)
+    #: False until the dealer's hole (second) card is revealed at
+    #: resolution time. See `app.serialization`'s masking of
+    #: `dealer_hand[1]` while this is `False`.
+    dealer_hole_card_revealed: bool = False
+
+    status: Literal["betting", "bettor_turn"] = "betting"
+
+    #: Connected, seated non-dealer players who haven't yet placed a bet
+    #: or declined this round. See this model's docstring.
+    responses_pending: list[PlayerId] = Field(default_factory=list)
+
+    #: player_id -> that bettor's participation. Only players who bet
+    #: (not those who declined) get an entry.
+    participants: dict[PlayerId, BlackjackParticipant] = Field(default_factory=dict)
+
+    #: Seat-order queue of bettor ids still needing to hit/stand this
+    #: round; `bettor_queue[0]` is whoever may currently act. Mirrors
+    #: `special_build_queue`'s shape exactly. Empty during `status ==
+    #: "betting"`.
+    bettor_queue: list[PlayerId] = Field(default_factory=list)
+
+    #: The round's shuffled deck, dealt from via `list.pop()` (same "last
+    #: element is next draw" convention as `Bank.dev_card_pile`). Never
+    #: exposed on the wire -- see `app.protocol.events.BlackjackRoundView`,
+    #: which omits it entirely.
+    deck: list[Card] = Field(default_factory=list)
 
 
 class Bank(BaseModel):
@@ -216,6 +361,16 @@ class GameState(BaseModel):
     #: from this field, not from `current_player_index`, while `phase ==
     #: Phase.SPECIAL_BUILD`.
     special_build_queue: list[PlayerId] = Field(default_factory=list)
+
+    #: While `phase == Phase.BLACKJACK_ROUND`: the full state of that
+    #: round (dealer hand, bettors' bets/hands/status, the bettor-turn
+    #: queue, and the round's deck). `None` at every other phase -- see
+    #: `BlackjackRoundState`'s docstring for the full lifecycle. A
+    #: dedicated field rather than a `PendingAction` member, following
+    #: `special_build_queue`'s precedent: this round carries real,
+    #: multi-player internal state that doesn't fit `PendingAction`'s
+    #: flat, single-purpose shapes.
+    blackjack_round: BlackjackRoundState | None = None
 
     #: What the game is explicitly waiting on before normal action
     #: validation resumes, or `None` during ordinary play. See

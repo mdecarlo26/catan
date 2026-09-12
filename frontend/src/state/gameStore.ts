@@ -19,6 +19,7 @@
 
 import { create } from "zustand";
 import type {
+  BlackjackRoundResolvedPayload,
   BuildingType,
   ClientGameStateView,
   DiscardRequiredPayload,
@@ -86,6 +87,14 @@ export interface DiceRollEventRecord {
   die2: number;
 }
 
+/** A BLACKJACK_ROUND_RESOLVED event, retained for a one-shot
+ * round-resolution toast trigger (see Game.tsx / BlackjackToast), mirroring
+ * NukeEventRecord's shape. */
+export interface BlackjackResolvedEventRecord {
+  seq: number;
+  payload: BlackjackRoundResolvedPayload;
+}
+
 const MAX_LOG_ENTRIES = 100;
 
 export interface LogEntry {
@@ -126,6 +135,8 @@ export interface GameStoreState {
   nukeEvent: NukeEventRecord | null;
   /** Most recent DICE_ROLLED event, for one-shot dice-tumble animation triggers. */
   diceRollEvent: DiceRollEventRecord | null;
+  /** Most recent BLACKJACK_ROUND_RESOLVED event, for a one-shot resolution toast. */
+  blackjackResolvedEvent: BlackjackResolvedEventRecord | null;
 
   /** Rolling human-readable turn/event log, newest last. */
   log: LogEntry[];
@@ -152,6 +163,7 @@ function initialState(): Pick<
   | "lastError"
   | "nukeEvent"
   | "diceRollEvent"
+  | "blackjackResolvedEvent"
   | "log"
 > {
   return {
@@ -166,6 +178,7 @@ function initialState(): Pick<
     lastError: null,
     nukeEvent: null,
     diceRollEvent: null,
+    blackjackResolvedEvent: null,
     log: [],
   };
 }
@@ -350,6 +363,53 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
         break;
       }
 
+      case "BLACKJACK_ROUND_STARTED": {
+        set({ log: withLog("A blackjack round has opened for betting.") });
+        break;
+      }
+
+      case "BLACKJACK_BET_PLACED": {
+        set({ log: withLog("A blackjack bet was placed.") });
+        break;
+      }
+
+      case "BLACKJACK_BET_DECLINED": {
+        set({ log: withLog("A player declined the blackjack round.") });
+        break;
+      }
+
+      case "BLACKJACK_HAND_UPDATED": {
+        set({
+          log: withLog(
+            event.payload.status === "busted"
+              ? "A blackjack hand busted."
+              : event.payload.status === "stood"
+                ? "A blackjack hand stood."
+                : "A blackjack hand hit."
+          ),
+        });
+        break;
+      }
+
+      case "BLACKJACK_DEALER_REVEALED": {
+        set({
+          log: withLog(
+            event.payload.dealer_busted
+              ? `Dealer busted with ${event.payload.dealer_total}.`
+              : `Dealer revealed ${event.payload.dealer_total}.`
+          ),
+        });
+        break;
+      }
+
+      case "BLACKJACK_ROUND_RESOLVED": {
+        set({
+          blackjackResolvedEvent: { seq: event.seq, payload: event.payload },
+          log: withLog("Blackjack round resolved."),
+        });
+        break;
+      }
+
       case "LONGEST_ROAD_CHANGED": {
         set({ log: withLog("Longest road holder changed.") });
         break;
@@ -408,6 +468,12 @@ const SERVER_EVENT_TYPES: ServerEvent["type"][] = [
   "TRADE_RESOLVED",
   "DEV_CARD_COUNT_CHANGED",
   "NUKE_DROPPED",
+  "BLACKJACK_ROUND_STARTED",
+  "BLACKJACK_BET_PLACED",
+  "BLACKJACK_BET_DECLINED",
+  "BLACKJACK_HAND_UPDATED",
+  "BLACKJACK_DEALER_REVEALED",
+  "BLACKJACK_ROUND_RESOLVED",
   "LONGEST_ROAD_CHANGED",
   "LARGEST_ARMY_CHANGED",
   "TURN_TIMER_EXPIRED",
