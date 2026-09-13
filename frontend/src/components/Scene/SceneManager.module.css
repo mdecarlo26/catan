@@ -1,0 +1,42 @@
+.root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  /* Sane standalone default so this reads correctly in isolation (e.g.
+     the dev harness); a real page shell is expected to give this
+     component's parent an explicit sized box, which this will then fill
+     instead via the 100%/100% above. */
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+/* Both the board+HUD layer and the minigame/casino layer are always
+   mounted and always occupy the same box, absolutely stacked on top of
+   one another. Only `opacity`/`pointer-events` (never `display`/mount
+   state) distinguish the active one from the inactive one, per
+   SceneManager's core constraint: BoardCanvas must never unmount. */
+.layer {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.45s ease;
+}
+
+.layerActive {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.layerInactive {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The title-card layer sits above both, and is mount/unmount-controlled
+   (see SceneManager.tsx) rather than opacity-toggled, so its own
+   scale/fade-in animation replays fresh each time it appears. */
+.titleLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
