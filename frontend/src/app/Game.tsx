@@ -14,7 +14,8 @@ import {
   NukeButton,
   NukeFlowPanel,
   NukeToast,
-  ResourceTray,
+  OpponentRail,
+  ResourceHandFan,
   TradePanel,
   TurnLog,
   VpCounter,
@@ -26,9 +27,11 @@ import type {
   BlackjackToastItem,
   NukeStep,
   NukeToastItem,
+  OpponentInfo,
   PortAccess,
   TurnLogEntry,
 } from "../components/Hud";
+import { CasinoTable, SceneManager } from "../components/Scene";
 import type {
   BankTradePayload,
   DevCardType,
@@ -166,6 +169,23 @@ export default function Game() {
   >(null);
   const [blackjackToasts, setBlackjackToasts] = useState<BlackjackToastItem[]>([]);
   const blackjackToastTimers = useRef<number[]>([]);
+
+  // Purely visual "which of my own fanned resource cards are highlighted"
+  // selection for ResourceHandFan -- scoped to this display only, no
+  // effect on any trade/discard flow (those already own their own
+  // resource-selection state independently).
+  const [selectedHandCardKeys, setSelectedHandCardKeys] = useState<Set<string>>(new Set());
+  function toggleSelectedHandCard(cardKey: string) {
+    setSelectedHandCardKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(cardKey)) {
+        next.delete(cardKey);
+      } else {
+        next.add(cardKey);
+      }
+      return next;
+    });
+  }
 
   useEffect(() => {
     return () => {
@@ -510,6 +530,14 @@ export default function Game() {
         }))
     : [];
 
+  // Fresh derivation for OpponentRail only -- deliberately NOT reusing
+  // `otherPlayers` above, which TradePanel/NukeFlowPanel already depend on
+  // in its current (narrower) shape. MaskedPlayerView is a structural
+  // superset of OpponentInfo, so no reshaping is needed here.
+  const opponents: OpponentInfo[] = view
+    ? Object.values(view.players).filter((p) => p.player_id !== myId)
+    : [];
+
   const turnLogEntries: TurnLogEntry[] = log.map((entry) => ({
     id: String(entry.id),
     timestamp: entry.ts * 1000,
@@ -610,10 +638,11 @@ export default function Game() {
   const showDice = !!(view.last_dice_roll || diceRollEvent);
   const showConfirmSingleRoad = buildMode === "road_building" && roadBuildingEdges.length === 1;
 
-  return (
+  // The normal board + surrounding HUD, always mounted (see SceneManager's
+  // doc comments -- BoardCanvas must never unmount, even while the
+  // blackjack minigame scene is showing on top of it).
+  const boardAndHud = (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-      <NukeToast toasts={nukeToasts} />
-      <BlackjackToast toasts={blackjackToasts} />
       <div>
         <h1>Game</h1>
         <p>Room code: {roomCode}</p>
@@ -632,6 +661,8 @@ export default function Game() {
             robber{myRobberMovePending ? " (you)" : ""}.
           </p>
         )}
+
+        <OpponentRail opponents={opponents} currentTurnPlayerId={currentPlayerId} />
 
         <ActionDock
           die1={diceRollEvent?.die1 ?? view.last_dice_roll?.[0] ?? null}
@@ -728,39 +759,6 @@ export default function Game() {
           onCancel={cancelNuke}
         />
 
-        {blackjackRound && (
-          <>
-            <BlackjackHands round={blackjackRound} nicknames={blackjackNicknames} />
-
-            {myBlackjackEligible && (
-              <BlackjackBetPanel
-                step={blackjackBetStep}
-                hand={me?.hand ?? {}}
-                hasStakeableStructure={hasStakeableStructure}
-                pendingStructureLabel={pendingStructureLabel}
-                onStartResources={startBlackjackResourceBet}
-                onStartStructure={startBlackjackStructureBet}
-                onSubmitResources={submitBlackjackResourceBet}
-                onConfirmStructure={confirmBlackjackStructureBet}
-                onCancel={cancelBlackjackBet}
-                onDecline={declineBlackjack}
-              />
-            )}
-
-            {myBlackjackTurn && (
-              <div style={{ border: "2px solid #2f7a3a", padding: 8, margin: "8px 0" }}>
-                <p>Your blackjack turn: hit or stand?</p>
-                <button type="button" onClick={() => wsClient.send({ type: "BLACKJACK_HIT", payload: {} })}>
-                  Hit
-                </button>
-                <button type="button" onClick={() => wsClient.send({ type: "BLACKJACK_STAND", payload: {} })}>
-                  Stand
-                </button>
-              </div>
-            )}
-          </>
-        )}
-
         {devCardPrompt === "monopoly" && (
           <div style={{ border: "2px solid purple", padding: 8, margin: "8px 0" }}>
             <select value={monopolyChoice} onChange={(e) => setMonopolyChoice(e.target.value as ResourceType)}>
@@ -830,7 +828,11 @@ export default function Game() {
           hasLongestRoad={me?.has_longest_road}
           hasLargestArmy={me?.has_largest_army}
         />
-        <ResourceTray hand={me?.hand ?? {}} />
+        <ResourceHandFan
+          hand={me?.hand ?? {}}
+          selected={selectedHandCardKeys}
+          onToggle={toggleSelectedHandCard}
+        />
         {view.settings.nuke_mode && nukeEligible && nukeStep === "idle" && (
           <div style={{ margin: "8px 0" }}>
             <NukeButton
@@ -846,6 +848,7 @@ export default function Game() {
         )}
         <DevCardHand
           cards={me?.dev_cards ?? {}}
+          boughtThisTurn={me?.dev_cards_bought_this_turn ?? undefined}
           playableCardTypes={canAct ? PLAYABLE_DEV_CARDS : []}
           onPlay={canAct ? handlePlayDevCard : undefined}
         />
@@ -863,6 +866,58 @@ export default function Game() {
         )}
         <TurnLog entries={turnLogEntries} />
       </div>
+    </div>
+  );
+
+  // The blackjack-on-7 "minigame" scene: unchanged BlackjackHands/
+  // BlackjackBetPanel (BlackjackToast stays global, rendered at the very
+  // top regardless of scene, since round-outcome toasts should surface
+  // even if the viewer isn't currently looking at the casino table),
+  // re-parented into a CasinoTable frame. Always mounted (per
+  // SceneManager's contract) -- its content is simply empty outside an
+  // active blackjack round.
+  const minigameContent = (
+    <CasinoTable>
+      {blackjackRound && (
+        <>
+          <BlackjackHands round={blackjackRound} nicknames={blackjackNicknames} />
+
+          {myBlackjackEligible && (
+            <BlackjackBetPanel
+              step={blackjackBetStep}
+              hand={me?.hand ?? {}}
+              hasStakeableStructure={hasStakeableStructure}
+              pendingStructureLabel={pendingStructureLabel}
+              onStartResources={startBlackjackResourceBet}
+              onStartStructure={startBlackjackStructureBet}
+              onSubmitResources={submitBlackjackResourceBet}
+              onConfirmStructure={confirmBlackjackStructureBet}
+              onCancel={cancelBlackjackBet}
+              onDecline={declineBlackjack}
+            />
+          )}
+
+          {myBlackjackTurn && (
+            <div style={{ border: "2px solid #2f7a3a", padding: 8, margin: "8px 0" }}>
+              <p>Your blackjack turn: hit or stand?</p>
+              <button type="button" onClick={() => wsClient.send({ type: "BLACKJACK_HIT", payload: {} })}>
+                Hit
+              </button>
+              <button type="button" onClick={() => wsClient.send({ type: "BLACKJACK_STAND", payload: {} })}>
+                Stand
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </CasinoTable>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <NukeToast toasts={nukeToasts} />
+      <BlackjackToast toasts={blackjackToasts} />
+      <SceneManager phase={view.phase} boardAndHud={boardAndHud} minigameContent={minigameContent} />
     </div>
   );
 }
