@@ -7,11 +7,26 @@ import type { Terrain, PlayerId } from "../types/protocol";
 export const TERRAIN_COLORS: Record<Terrain, number> = {
   forest: 0x2f6b3a,
   hills: 0xb5651d,
-  mountains: 0x8a8d90,
-  fields: 0xe8c547,
-  pasture: 0x8fc93a,
+  mountains: 0x6f757a,
+  fields: 0xd9a839,
+  pasture: 0x7ec13f,
   desert: 0xd9c08c,
   sea: 0x2a6f97,
+};
+
+/**
+ * Lighter accent tone paired with each TERRAIN_COLORS base, used by
+ * HexTileView to two-tone-shade each hex (a solid base plus a brighter
+ * accent facet across its upper portion) instead of a single flat fill.
+ */
+export const TERRAIN_ACCENT_COLORS: Record<Terrain, number> = {
+  forest: 0x4f9a5c,
+  hills: 0xd98a3d,
+  mountains: 0xb9c0c4,
+  fields: 0xf3d977,
+  pasture: 0xb3e067,
+  desert: 0xeddcb2,
+  sea: 0x5fa9cf,
 };
 
 export const TERRAIN_LABELS: Record<Terrain, string> = {

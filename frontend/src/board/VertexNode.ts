@@ -115,12 +115,19 @@ export class VertexNodeView extends Container {
     const color = playerColor(building.colorIndex);
     const g = new Graphics();
     const r = this.radius;
+    // Subtle drop-shadow: the same silhouette(s), offset and dark, drawn
+    // first so the colored piece reads with a bit of depth against the
+    // board rather than sitting perfectly flat.
+    const shadowOffset = r * 0.12;
 
     if (building.buildingType === "settlement") {
+      drawHouse(g, shadowOffset, shadowOffset, r * 1.0, r * 0.95, r * 0.65, 0x0a0a0a, 0.35);
       drawHouse(g, 0, 0, r * 1.0, r * 0.95, r * 0.65, color);
     } else {
       // City: a bigger main house plus a smaller attached block, per the
       // classic Catan city silhouette (visibly larger than a settlement).
+      drawHouse(g, -r * 0.35 + shadowOffset, shadowOffset, r * 1.15, r * 1.05, r * 0.75, 0x0a0a0a, 0.35);
+      drawHouse(g, r * 0.85 + shadowOffset, r * 0.25 + shadowOffset, r * 0.6, r * 0.55, r * 0.4, 0x0a0a0a, 0.35);
       drawHouse(g, -r * 0.35, 0, r * 1.15, r * 1.05, r * 0.75, color);
       drawHouse(g, r * 0.85, r * 0.25, r * 0.6, r * 0.55, r * 0.4, color);
     }
@@ -136,7 +143,9 @@ export class VertexNodeView extends Container {
   }
 }
 
-/** Draws a simple pentagon "house" (roof + walls) centered at (cx, cy). */
+/** Draws a simple pentagon "house" (roof + walls) centered at (cx, cy).
+ * `alpha` lets callers draw a translucent dark copy as a drop-shadow pass
+ * before the opaque, colored piece -- same shape/anchor math either way. */
 function drawHouse(
   g: Graphics,
   cx: number,
@@ -144,7 +153,8 @@ function drawHouse(
   halfWidth: number,
   wallHeight: number,
   roofHeight: number,
-  color: number
+  color: number,
+  alpha = 1
 ): void {
   const baseY = cy + wallHeight * 0.5;
   const topY = cy - wallHeight * 0.5;
@@ -159,6 +169,6 @@ function drawHouse(
     ],
     true
   )
-    .fill({ color })
-    .stroke({ width: 1.25, color: 0x1a1a1a, alpha: 0.85 });
+    .fill({ color, alpha })
+    .stroke({ width: 1.5, color: 0x1a1a1a, alpha: alpha * 0.9 });
 }
