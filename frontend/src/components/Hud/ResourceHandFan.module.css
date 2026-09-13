@@ -1,0 +1,100 @@
+.fan {
+  position: relative;
+  height: 172px;
+  min-width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  font-family: system-ui, sans-serif;
+}
+
+.empty {
+  align-self: center;
+  color: #9aa0b4;
+  font-size: 0.85rem;
+}
+
+.card {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 92px;
+  height: 132px;
+  margin-left: -46px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0.45rem 0.4rem 0.55rem;
+  border-radius: 10px;
+  border: 2px solid #333a52;
+  background: linear-gradient(180deg, #1e2230 0%, #12141c 100%);
+  color: #f3ead9;
+  cursor: pointer;
+  transform-origin: 50% 100%;
+  transform: translate(var(--fan-x), var(--fan-y)) rotate(var(--fan-rot));
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    border-color 0.15s ease;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+}
+
+.card:hover:not(:disabled) {
+  transform: translate(var(--fan-x), calc(var(--fan-y) - 12px)) rotate(var(--fan-rot));
+  z-index: 999 !important;
+}
+
+.card:disabled {
+  cursor: default;
+}
+
+.selected {
+  border-color: #e8c565;
+  box-shadow:
+    0 0 0 2px #e8c565,
+    0 10px 20px rgba(0, 0, 0, 0.5);
+  transform: translate(var(--fan-x), calc(var(--fan-y) - 18px)) rotate(var(--fan-rot)) scale(1.08);
+  z-index: 998 !important;
+}
+
+.selected:hover:not(:disabled) {
+  transform: translate(var(--fan-x), calc(var(--fan-y) - 18px)) rotate(var(--fan-rot)) scale(1.08);
+}
+
+.corner {
+  font-size: 0.72rem;
+  opacity: 0.65;
+  line-height: 1;
+}
+
+.cornerTop {
+  align-self: flex-start;
+}
+
+.cornerBottom {
+  align-self: flex-end;
+  margin-top: auto;
+}
+
+.inner {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0.15rem 0;
+  border-radius: 50% / 45%;
+  background: radial-gradient(ellipse at center, var(--fan-tint) 0%, transparent 72%);
+}
+
+.icon {
+  font-size: 2.1rem;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.55));
+}
+
+.label {
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+}

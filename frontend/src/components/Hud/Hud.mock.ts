@@ -23,6 +23,58 @@ export const MOCK_DEV_CARD_HAND: DevCardHand = {
   victory_point: 1,
 };
 
+// ---------------------------------------------------------------------
+// ResourceHandFan / DevCardHand fixtures -- exercise empty, small (1-3),
+// and large (15+) fanned hands, plus the dev-card locked ("bought this
+// turn") and victory-point visual states.
+// ---------------------------------------------------------------------
+
+export const MOCK_RESOURCE_HAND_EMPTY: ResourceHand = {};
+
+export const MOCK_RESOURCE_HAND_SMALL: ResourceHand = {
+  brick: 1,
+  lumber: 1,
+};
+
+export const MOCK_RESOURCE_HAND_LARGE: ResourceHand = {
+  brick: 4,
+  lumber: 4,
+  ore: 3,
+  grain: 5,
+  wool: 4,
+};
+
+export const MOCK_DEV_CARD_HAND_EMPTY: DevCardHand = {};
+
+export const MOCK_DEV_CARD_HAND_SMALL: DevCardHand = {
+  knight: 1,
+  monopoly: 1,
+};
+
+export const MOCK_DEV_CARD_HAND_LARGE: DevCardHand = {
+  knight: 6,
+  road_building: 3,
+  year_of_plenty: 2,
+  monopoly: 3,
+  victory_point: 2,
+};
+
+/** No dev cards locked -- everything eligible in `MOCK_DEV_CARD_HAND` was
+ * bought in a prior turn. */
+export const MOCK_DEV_CARDS_BOUGHT_THIS_TURN_NONE: DevCardHand = {};
+
+/**
+ * Paired with `MOCK_DEV_CARD_HAND_LARGE`: 2 of the 6 knights and both
+ * year-of-plenty cards were just bought this turn, so those instances
+ * render locked/dimmed while the rest of the hand (including the 2
+ * victory-point cards, which are never playable regardless) stays
+ * interactive.
+ */
+export const MOCK_DEV_CARDS_BOUGHT_THIS_TURN: DevCardHand = {
+  knight: 2,
+  year_of_plenty: 2,
+};
+
 export const MOCK_VP = {
   victoryPoints: 6,
   targetVictoryPoints: 10,
