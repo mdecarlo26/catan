@@ -150,6 +150,11 @@ class MaskedPlayerView(BaseModel):
     hand: ResourceHand | None = None
     #: Populated only for the viewer's own entry.
     dev_cards: dict[DevCardType, int] | None = None
+    #: Dev cards bought during the viewer's *current* turn (not yet
+    #: playable -- see `app.game.players.PlayerState
+    #: .dev_cards_bought_this_turn`). Populated only for the viewer's own
+    #: entry, same masking as `dev_cards` above.
+    dev_cards_bought_this_turn: dict[DevCardType, int] | None = None
 
 
 class WireHexTile(BaseModel):

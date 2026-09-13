@@ -93,6 +93,7 @@ def _masked_player_view(state: GameState, player_id: PlayerId, viewer_player_id:
         dev_card_count=dev_cards.total_owned(player),
         hand=dict(player.hand) if is_viewer else None,
         dev_cards=dict(player.dev_cards) if is_viewer else None,
+        dev_cards_bought_this_turn=dict(player.dev_cards_bought_this_turn) if is_viewer else None,
     )
 
 

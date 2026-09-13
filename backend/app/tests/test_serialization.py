@@ -51,6 +51,13 @@ def _make_state() -> GameState:
         DevCardType.MONOPOLY: 0,
         DevCardType.VICTORY_POINT: 1,
     }
+    players["bob"].dev_cards_bought_this_turn = {
+        DevCardType.KNIGHT: 0,
+        DevCardType.ROAD_BUILDING: 0,
+        DevCardType.YEAR_OF_PLENTY: 1,
+        DevCardType.MONOPOLY: 0,
+        DevCardType.VICTORY_POINT: 0,
+    }
     players["carol"].hand = {
         ResourceType.BRICK: 0,
         ResourceType.LUMBER: 0,
@@ -103,8 +110,17 @@ def test_viewer_sees_their_own_hand_and_dev_cards():
         DevCardType.MONOPOLY: 0,
         DevCardType.VICTORY_POINT: 1,
     }
+    assert bob_view.dev_cards_bought_this_turn == {
+        DevCardType.KNIGHT: 0,
+        DevCardType.ROAD_BUILDING: 0,
+        DevCardType.YEAR_OF_PLENTY: 1,
+        DevCardType.MONOPOLY: 0,
+        DevCardType.VICTORY_POINT: 0,
+    }
     assert bob_view.resource_card_count == 7
-    assert bob_view.dev_card_count == 2
+    # total_owned counts both playable dev_cards (2) and the 1 bought
+    # this turn (not yet playable, but still owned).
+    assert bob_view.dev_card_count == 3
 
 
 def test_opponents_hand_and_dev_cards_are_masked_to_none_and_counts_only():
@@ -116,11 +132,13 @@ def test_opponents_hand_and_dev_cards_are_masked_to_none_and_counts_only():
 
     assert alice_view.hand is None
     assert alice_view.dev_cards is None
+    assert alice_view.dev_cards_bought_this_turn is None
     assert alice_view.resource_card_count == 4  # 3 brick + 1 lumber
     assert alice_view.dev_card_count == 0
 
     assert carol_view.hand is None
     assert carol_view.dev_cards is None
+    assert carol_view.dev_cards_bought_this_turn is None
     assert carol_view.resource_card_count == 4  # 4 wool
 
 
@@ -154,8 +172,10 @@ def test_no_hidden_info_leaks_anywhere_in_the_serialized_json_for_a_non_owning_v
     # resource, must not appear as sub-objects anywhere.
     assert dumped["players"]["bob"]["hand"] is None
     assert dumped["players"]["bob"]["dev_cards"] is None
+    assert dumped["players"]["bob"]["dev_cards_bought_this_turn"] is None
     assert dumped["players"]["carol"]["hand"] is None
     assert dumped["players"]["carol"]["dev_cards"] is None
+    assert dumped["players"]["carol"]["dev_cards_bought_this_turn"] is None
 
     # The bank's actual dev card pile (identity/order) must never appear;
     # only bank_dev_card_count (an int) should carry that information.
@@ -184,3 +204,4 @@ def test_viewer_id_not_seated_still_masks_everyone():
     for player_view in view.players.values():
         assert player_view.hand is None
         assert player_view.dev_cards is None
+        assert player_view.dev_cards_bought_this_turn is None
