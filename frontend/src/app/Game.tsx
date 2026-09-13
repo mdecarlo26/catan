@@ -631,6 +631,7 @@ export default function Game() {
           seat: p.seat,
           is_connected: p.is_connected,
           is_host: false,
+          is_bot: p.is_bot,
         }))
     : [];
 

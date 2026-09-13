@@ -84,6 +84,7 @@ def _masked_player_view(state: GameState, player_id: PlayerId, viewer_player_id:
         nickname=player.nickname,
         seat=player.seat,
         is_connected=player.is_connected,
+        is_bot=player.is_bot,
         victory_points=player.victory_points,
         knights_played=player.knights_played,
         has_longest_road=player.has_longest_road,

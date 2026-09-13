@@ -112,6 +112,12 @@ class PlayerSummary(BaseModel):
     seat: int
     is_connected: bool
     is_host: bool
+    #: True for a server-generated bot seat (see `app.core.room.Room
+    #: .add_bot`). Always `False` in practice for `RoomStatePayload` (bots
+    #: are only ever seated at `START_GAME`, after which the lobby's
+    #: `ROOM_STATE` broadcast is no longer sent) -- included for
+    #: completeness/consistency with `MaskedPlayerView.is_bot` below.
+    is_bot: bool = False
 
 
 class MaskedPlayerView(BaseModel):
@@ -128,6 +134,10 @@ class MaskedPlayerView(BaseModel):
     nickname: str
     seat: int
     is_connected: bool
+    #: True for a server-generated bot seat -- mirrors
+    #: `app.game.players.PlayerState.is_bot` 1:1, so the frontend can
+    #: render a bot badge (see `frontend/src/components/Lobby/PlayerList.tsx`).
+    is_bot: bool
     victory_points: int
     knights_played: int
     has_longest_road: bool

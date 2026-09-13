@@ -286,6 +286,7 @@ def _room_state_payload(room: Room) -> RoomStatePayload:
                 seat=seat.seat,
                 is_connected=seat.is_connected,
                 is_host=seat.is_host,
+                is_bot=seat.is_bot,
             )
             for seat in sorted(room.seats.values(), key=lambda s: s.seat)
         ],
@@ -516,17 +517,31 @@ async def _handle_start_game(websocket: WebSocket, room: Room, conn: _ConnState)
     if room.game_state is not None:
         await _send_private_error(websocket, room, "already_started", "The game has already started.")
         return False
-    player_count = len(room.seats)
-    if not (2 <= player_count <= 8):
+    human_count = len(room.seats)
+    if human_count < 1:
         await _send_private_error(
-            websocket, room, "invalid_player_count", "Need between 2 and 8 seated players to start."
+            websocket, room, "invalid_player_count", "Need at least the host seated to start."
         )
         return False
 
-    # `player_count` is locked to however many seats actually filled, not
-    # whatever value the host's settings form last had -- board
-    # generation is keyed off the real seat count.
-    locked_settings = room.settings.model_copy(update={"player_count": player_count})
+    # Bot auto-fill: no manual "add bot" UI -- this is the only place
+    # bots ever get seated. If fewer connected humans are present than
+    # the host's configured `settings.player_count`, seat bots (see
+    # `Room.add_bot`) to fill the remaining seats, down to just the host
+    # being enough to start a game full of bots (solo play/testing). If
+    # humans alone already meet or exceed `settings.player_count`, no
+    # bots are added and every seated human plays -- `player_count` has
+    # always been secondary to "however many seats actually filled" (see
+    # the `locked_settings` comment below), so a host who seated more
+    # humans than their own setting still just plays with all of them.
+    target_player_count = min(max(human_count, room.settings.player_count), 8)
+    for i in range(1, target_player_count - human_count + 1):
+        room.add_bot(f"bot-{uuid.uuid4()}", f"Bot {i}")
+
+    # `player_count` is locked to the real total seat count (humans plus
+    # any auto-filled bots), not whatever value the host's settings form
+    # last had -- board generation is keyed off the real seat count.
+    locked_settings = room.settings.model_copy(update={"player_count": len(room.seats)})
     try:
         board = board_generator.generate_board_for_settings(locked_settings)
     except ValueError as exc:
@@ -536,12 +551,14 @@ async def _handle_start_game(websocket: WebSocket, room: Room, conn: _ConnState)
     ordered_seats = sorted(room.seats.values(), key=lambda s: s.seat)
     turn_order = [seat.player_id for seat in ordered_seats]
     players = {
-        seat.player_id: PlayerState(player_id=seat.player_id, nickname=seat.nickname, seat=seat.seat)
+        seat.player_id: PlayerState(
+            player_id=seat.player_id, nickname=seat.nickname, seat=seat.seat, is_bot=seat.is_bot
+        )
         for seat in ordered_seats
     }
     bank = Bank(
         resources={resource: 19 for resource in ResourceType},
-        dev_card_pile=dev_cards.build_deck(player_count),
+        dev_card_pile=dev_cards.build_deck(len(room.seats)),
     )
     state = GameState(
         room_code=room.room_code,
@@ -558,8 +575,17 @@ async def _handle_start_game(websocket: WebSocket, room: Room, conn: _ConnState)
     room.lock_settings()
     _touch(room.room_code)
 
+    # Any bot decision(s) due immediately at game start -- e.g. the very
+    # first SETUP placement, if turn_order[0] happens to be a bot -- are
+    # drained before the first broadcast so every client's initial
+    # snapshot already reflects them. `_handle_gameplay_action` doesn't
+    # need this itself: `rules_engine.validate_and_apply` drains bot
+    # actions automatically after every action it applies.
+    bot_events = rules_engine.drain_bot_actions(state)
+
     seq = room.next_seq()
     await _broadcast_event(room, GameStartedEvent(seq=seq, ts=_now(), payload=GameStartedPayload(turn_order=turn_order)))
+    await _dispatch_rule_events(room, bot_events)
     await _broadcast_snapshots(room, state)
 
     _timer_tasks[room.room_code] = asyncio.create_task(_turn_timer_loop(room))

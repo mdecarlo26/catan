@@ -464,6 +464,8 @@ export interface PlayerSummary {
   seat: number;
   is_connected: boolean;
   is_host: boolean;
+  /** True for a server-generated bot seat (see backend Room.add_bot). */
+  is_bot: boolean;
 }
 
 /**
@@ -478,6 +480,8 @@ export interface MaskedPlayerView {
   nickname: string;
   seat: number;
   is_connected: boolean;
+  /** True for a server-generated bot seat (see backend Room.add_bot). */
+  is_bot: boolean;
   victory_points: number;
   knights_played: number;
   has_longest_road: boolean;

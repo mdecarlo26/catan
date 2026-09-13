@@ -122,6 +122,7 @@ export const MOCK_PLAYERS: PlayerSummary[] = [
     seat: 0,
     is_connected: true,
     is_host: true,
+    is_bot: false,
   },
   {
     player_id: "player-2",
@@ -129,6 +130,7 @@ export const MOCK_PLAYERS: PlayerSummary[] = [
     seat: 1,
     is_connected: true,
     is_host: false,
+    is_bot: false,
   },
   {
     player_id: "player-3",
@@ -136,6 +138,7 @@ export const MOCK_PLAYERS: PlayerSummary[] = [
     seat: 2,
     is_connected: false,
     is_host: false,
+    is_bot: false,
   },
   {
     player_id: "player-4",
@@ -143,5 +146,6 @@ export const MOCK_PLAYERS: PlayerSummary[] = [
     seat: 3,
     is_connected: true,
     is_host: false,
+    is_bot: false,
   },
 ];

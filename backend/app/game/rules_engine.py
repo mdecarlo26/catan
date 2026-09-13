@@ -73,7 +73,7 @@ from app.game.board import (
     VertexId,
 )
 from app.game.players import DevCardType, ResourceHand, ResourceType
-from app.game.rules import blackjack, nuke_mode, robber_strategies, setup_strategies
+from app.game.rules import blackjack, bot_ai, nuke_mode, robber_strategies, setup_strategies
 from app.game.state import (
     AwaitingDiscard,
     AwaitingRobberPlacement,
@@ -1816,6 +1816,57 @@ APPLIERS: dict[ActionType, _Applier] = {
 }
 
 
+#: Defensive iteration cap for `_drain_bot_actions`, guarding against an
+#: unforeseen bug producing an infinite bot-action handoff loop (e.g. two
+#: bots somehow perpetually re-triggering each other). A real game never
+#: gets remotely close to this -- even a full 8-bot SETUP snake draft is
+#: only 32 placements.
+BOT_ACTION_ITERATION_CAP = 200
+
+
+def _drain_bot_actions(state: GameState) -> list[RuleEvent]:
+    """After `state` settles into a new shape (following any applied
+    action -- human or bot), check whether a bot now owes the next
+    decision at any pending decision point and, if so, synchronously
+    compute and apply it, looping since one bot's action can immediately
+    hand off to another bot's turn/obligation (e.g. several bots in a row
+    during SETUP's snake draft, or a bot passing all the way through a
+    SPECIAL_BUILD turn). Bounded by `BOT_ACTION_ITERATION_CAP` as a
+    defensive guard, not an expected limit.
+
+    Decision logic lives in `app.game.rules.bot_ai.decide_bot_action`
+    (a pure function of `state`, no mutation/events of its own); this
+    function owns applying whatever it decides through the *exact same*
+    `validate()` -> `apply()` path a real client action takes -- no
+    bypassing legality for bots. Does nothing at all while
+    `settings.rush_mode` is on -- see `bot_ai.decide_bot_action`'s own
+    early return and its docstring for that explicit, documented scope
+    limitation.
+    """
+    events: list[RuleEvent] = []
+    for _ in range(BOT_ACTION_ITERATION_CAP):
+        decision = bot_ai.decide_bot_action(state)
+        if decision is None:
+            break
+        actor_id, action = decision
+        validate(state, actor_id, action)
+        events.extend(apply(state, actor_id, action))
+    return events
+
+
+def drain_bot_actions(state: GameState) -> list[RuleEvent]:
+    """Public entry point for callers that mutate `state` outside
+    `validate_and_apply` -- specifically
+    `app.api.websocket._handle_start_game`, right after constructing the
+    freshly-started `GameState`: the very first `Phase.SETUP` placement
+    may already belong to a bot (e.g. if `turn_order[0]` is a bot seat).
+    `validate_and_apply` below calls the same underlying drain
+    automatically after every action it applies, so callers going through
+    that path never need to call this separately.
+    """
+    return _drain_bot_actions(state)
+
+
 def validate(state: GameState, actor_id: PlayerId, action: ClientAction) -> None:
     """Raise `RuleViolation` if `action` is illegal for `actor_id` right
     now. Never mutates `state`. Always checks the phase table first.
@@ -1849,6 +1900,15 @@ def apply(state: GameState, actor_id: PlayerId, action: ClientAction) -> list[Ru
 
 
 def validate_and_apply(state: GameState, actor_id: PlayerId, action: ClientAction) -> list[RuleEvent]:
-    """Convenience wrapper: `validate()` then `apply()`."""
+    """Convenience wrapper: `validate()` then `apply()`, then drains any
+    bot decisions that become due as a result (see `_drain_bot_actions`)
+    -- every call site in `app.api.websocket` (a real client action, a
+    stalled-turn-timer forced action, a forced blackjack decline/stand)
+    goes through this one function, so bot turns/obligations are always
+    picked up automatically without each call site needing to remember to
+    drain them itself.
+    """
     validate(state, actor_id, action)
-    return apply(state, actor_id, action)
+    events = apply(state, actor_id, action)
+    events.extend(_drain_bot_actions(state))
+    return events

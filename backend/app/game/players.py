@@ -73,6 +73,20 @@ class PlayerState(BaseModel):
     #: session token (see `app.core.connection_manager`).
     is_connected: bool = True
 
+    #: True for a server-generated bot seat (see `app.core.room.Room
+    #: .add_bot`, used by `app.api.websocket._handle_start_game` to
+    #: auto-fill empty seats down to `GameSettings.player_count` at
+    #: `START_GAME` time). A bot `PlayerState` is otherwise identical in
+    #: shape to a human's -- same hand/dev cards/buildings/VP fields,
+    #: participates in turn order and board ownership the same way, no
+    #: special-cased "not a real player" bypasses anywhere in
+    #: `rules_engine` except that its decisions are computed by
+    #: `app.game.rules.bot_ai` instead of coming from a client action.
+    #: `is_connected` is always `True` for a bot (no real socket is ever
+    #: bound to one, but it should never look "disconnected" to the
+    #: existing reconnect/turn-timer machinery).
+    is_bot: bool = False
+
     hand: ResourceHand = Field(
         default_factory=lambda: {r: 0 for r in ResourceType}
     )

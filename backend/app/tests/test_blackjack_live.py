@@ -106,11 +106,18 @@ def test_seven_roll_robber_then_blackjack_round_back_to_main():
             # test_blackjack.py, not needed here); discard_limit high so
             # the forced 7 never routes through ROBBER_DISCARD, keeping
             # this test focused on the robber -> blackjack hand-off.
+            # player_count is pinned to the 2 real humans actually seated
+            # here -- otherwise START_GAME's bot auto-fill (see
+            # app.api.websocket._handle_start_game) would seat 2 bots to
+            # reach the default player_count of 4, which this test's
+            # exact-2-player assertions (e.g. a single eligible bettor)
+            # don't expect.
             current_settings = room.settings.model_dump(mode="json")
             current_settings["board_layout"] = "fixed"
             current_settings["blackjack_mode"] = True
             current_settings["turn_timer_seconds"] = 0
             current_settings["discard_limit"] = 50
+            current_settings["player_count"] = 2
             host_ws.send_json({"type": "UPDATE_SETTINGS", "payload": {"settings": current_settings}})
             for ws in all_ws:
                 updated = ws.receive_json()

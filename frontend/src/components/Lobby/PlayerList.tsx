@@ -37,6 +37,11 @@ export function PlayerList({ players, viewerPlayerId, isHost, onKick }: PlayerLi
               {isViewer && <span className={styles.youTag}> (you)</span>}
             </span>
             {player.is_host && <span className={styles.hostBadge}>HOST</span>}
+            {player.is_bot && (
+              <span className={styles.botBadge} title="Bot player">
+                🤖 BOT
+              </span>
+            )}
             <span
               className={player.is_connected ? styles.connected : styles.disconnected}
               title={player.is_connected ? "Connected" : "Disconnected"}

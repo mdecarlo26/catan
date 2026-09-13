@@ -31,9 +31,9 @@ export const MOCK_VP = {
 };
 
 export const MOCK_OTHER_PLAYERS: PlayerSummary[] = [
-  { player_id: "player-2", nickname: "Bob", seat: 1, is_connected: true, is_host: false },
-  { player_id: "player-3", nickname: "Chloe", seat: 2, is_connected: false, is_host: false },
-  { player_id: "player-4", nickname: "Dave", seat: 3, is_connected: true, is_host: false },
+  { player_id: "player-2", nickname: "Bob", seat: 1, is_connected: true, is_host: false, is_bot: false },
+  { player_id: "player-3", nickname: "Chloe", seat: 2, is_connected: false, is_host: false, is_bot: false },
+  { player_id: "player-4", nickname: "Dave", seat: 3, is_connected: true, is_host: false, is_bot: false },
 ];
 
 export const MOCK_PORTS: PortAccess[] = [{ port_type: "grain", rate: 2 }];

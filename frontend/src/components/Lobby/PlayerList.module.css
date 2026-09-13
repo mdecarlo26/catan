@@ -46,6 +46,16 @@
   padding: 0.15rem 0.35rem;
 }
 
+.botBadge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: #34506b;
+  color: #e4eef7;
+  border-radius: 3px;
+  padding: 0.15rem 0.35rem;
+}
+
 .connected,
 .disconnected {
   display: inline-flex;

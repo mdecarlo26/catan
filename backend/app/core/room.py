@@ -64,6 +64,11 @@ class Seat:
     seat: int
     is_host: bool
     is_connected: bool = True
+    #: True for a server-generated bot seat (see `Room.add_bot`). Mirrors
+    #: `app.game.players.PlayerState.is_bot` at the lobby/seat-table
+    #: level; a bot seat is never `is_host` and never has a real socket
+    #: bound to it (`is_connected` stays `True` regardless).
+    is_bot: bool = False
 
 
 def _send(socket: object, data: str) -> None:
@@ -172,6 +177,35 @@ class Room:
         if seat is not None:
             self.session.invalidate_player(player_id)
             self._refresh_empty_since()
+        return seat
+
+    def add_bot(self, player_id: str, nickname: str) -> Seat:
+        """Seat a server-generated bot: same seat table entry shape as a
+        real player (`Seat`, with `is_bot=True`), but with no session
+        token ever issued and no `ConnectionManager` socket ever bound to
+        it -- a bot never connects over WS, it's driven entirely by
+        `app.game.rules.bot_ai` via `app.game.rules_engine`'s bot-draining
+        loop. `is_connected` stays at its default `True` forever (see
+        `PlayerState.is_bot`'s docstring for why: existing disconnect/
+        reconnect/turn-timer machinery must never treat a bot as
+        "dropped").
+
+        Only ever called from `app.api.websocket._handle_start_game`,
+        while auto-filling empty seats up to `GameSettings.player_count`
+        at `START_GAME` time -- this feature has no manual "add bot" UI
+        and no other seating trigger, per its documented scope.
+        """
+        if player_id in self.seats:
+            raise SeatTakenError(f"player {player_id!r} is already seated")
+        seat = Seat(
+            player_id=player_id,
+            nickname=nickname,
+            seat=self._next_free_seat_number(),
+            is_host=False,
+            is_bot=True,
+        )
+        self.seats[player_id] = seat
+        self._refresh_empty_since()
         return seat
 
     #: `KICK_PLAYER` is, at the room-state level, identical to
