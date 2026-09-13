@@ -116,6 +116,13 @@ export class EdgeSegmentView extends Container {
     this.roadGfx.clear();
     if (!road) return;
     const color = playerColor(road.colorIndex);
+    // Wider dark backing stroke first, for a crisper outline / subtle
+    // depth against the board, then the colored road on top -- same
+    // segment, same width as before, just an added pass underneath.
+    this.roadGfx
+      .moveTo(this.p1.x, this.p1.y)
+      .lineTo(this.p2.x, this.p2.y)
+      .stroke({ width: 9.5, color: 0x1a1a1a, alpha: 0.55, cap: "round" });
     this.roadGfx
       .moveTo(this.p1.x, this.p1.y)
       .lineTo(this.p2.x, this.p2.y)
