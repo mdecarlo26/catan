@@ -1,0 +1,117 @@
+/**
+ * The whole game screen, constrained to fit within the viewport (via
+ * App.module.css's `.main` flex slot, which this fills at height:100%)
+ * with no page-level scroll: a slim status bar, then a main area split
+ * into a center column (opponents strip + action dock + board) and a
+ * scrollable HUD sidebar.
+ */
+.screen {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-family: system-ui, sans-serif;
+  color: var(--color-text-slate);
+}
+
+.statusBar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.35rem 0.75rem;
+  background: var(--color-bg-slate-deep);
+  border-bottom: 1px solid var(--color-border-slate-deep);
+  font-size: 0.8rem;
+}
+
+.roomCode {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.statusMuted {
+  color: #9aa0b4;
+}
+
+.statusNote {
+  color: var(--color-gold-turn);
+}
+
+/* Sized box hosting SceneManager (which fills it at width/height 100%) --
+   SceneManager cross-fades `boardAndHud` (see .boardHudRow) against the
+   casino-table minigame content within this same box. */
+.mainArea {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0.6rem;
+  overflow: hidden;
+  position: relative;
+}
+
+.boardHudRow {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.centerColumn {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  /* auto, not hidden: the board is sized to normally fit without
+     scrolling, but critical text below it (whose-turn-to-place-setup
+     notes, robber/discard prompts) must never be silently clipped if it
+     runs slightly past the available height -- a scrollbar appearing is
+     far better than hiding required gameplay instructions. */
+  overflow-y: auto;
+}
+
+.opponentStrip {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+.boardArea {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  overflow: hidden;
+}
+
+.inlineNote {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  color: #9aa0b4;
+  text-align: center;
+}
+
+.sidebar {
+  flex: 0 0 300px;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-right: 0.25rem;
+}
+
+.loading {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  color: var(--color-text-slate);
+  font-family: system-ui, sans-serif;
+}

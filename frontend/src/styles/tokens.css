@@ -86,3 +86,40 @@
   /* A hand card actively hovered/lifted further. */
   --shadow-card-hover: 0 8px 16px rgba(0, 0, 0, 0.5);
 }
+
+/* ---- Global reset ----
+ * No app-wide stylesheet existed before this: every heading/paragraph in
+ * the app was rendering in the browser's default serif/margin styling,
+ * and html/body had no explicit height, which is why the game screen's
+ * layout couldn't reliably fill (or be constrained to) the viewport.
+ * This file is the one global stylesheet (imported once in main.tsx), so
+ * the reset lives here rather than a separate file. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  color: var(--color-text-slate);
+  background: #0b0d12;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}

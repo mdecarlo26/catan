@@ -30,8 +30,15 @@ export interface OpponentRailProps {
   currentTurnPlayerId?: PlayerId | null;
 }
 
-/** At or below this many opponents, use the left/right column layout. */
-const COLUMN_LAYOUT_MAX_OPPONENTS = 4;
+/**
+ * At or below this many opponents, use the left/right column layout.
+ * Set to 0 (always use the compact horizontal row instead): the game
+ * screen mounts this as a single strip above the board, and the row
+ * layout is the one that reliably stays compact there regardless of
+ * player count -- the column split was designed for flanking the board
+ * on both sides, which this screen's layout doesn't currently do.
+ */
+const COLUMN_LAYOUT_MAX_OPPONENTS = 0;
 
 export function OpponentRail({ opponents, currentTurnPlayerId = null }: OpponentRailProps) {
   if (opponents.length === 0) return null;

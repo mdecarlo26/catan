@@ -47,6 +47,7 @@ import type {
   WireBoardView,
 } from "../types/protocol";
 import { hexKey, vertexIdKey } from "../board/hexMath";
+import styles from "./Game.module.css";
 
 type BuildMode = "settlement" | "road" | "city" | "road_building" | null;
 
@@ -619,12 +620,9 @@ export default function Game() {
 
   if (!view) {
     return (
-      <div>
-        <h1>Game</h1>
-        <p>Room code: {roomCode}</p>
-        <p>Connection: {connectionStatus}</p>
-        {connectionStatus === "reconnecting" ? <p role="status">Reconnecting...</p> : null}
-        <p>Waiting for game state...</p>
+      <div className={styles.loading}>
+        <p>Room {roomCode}</p>
+        <p>{connectionStatus === "reconnecting" ? "Reconnecting..." : "Waiting for game state..."}</p>
       </div>
     );
   }
@@ -638,31 +636,35 @@ export default function Game() {
   const showDice = !!(view.last_dice_roll || diceRollEvent);
   const showConfirmSingleRoad = buildMode === "road_building" && roadBuildingEdges.length === 1;
 
+  // Short "what's happening" note shown in the slim status bar rather than
+  // as a separate paragraph competing for vertical space below the board
+  // -- keeps the whole screen fitting without a scroll for this text.
+  const setupNoteText =
+    view.phase === "setup"
+      ? isMySetupTurn
+        ? `Place your ${mySetupAction === "settlement" ? "settlement" : "road"}.`
+        : rushMode
+          ? "Setup complete -- waiting for other players to finish placing."
+          : setupExpectation
+            ? `Waiting for ${view.players[setupExpectation.playerId]?.nickname ?? setupExpectation.playerId} to place.`
+            : "Setup complete."
+      : null;
+  const rushRobberNoteText =
+    rushMode && rushRobberAssigneeId
+      ? `${view.players[rushRobberAssigneeId]?.nickname ?? rushRobberAssigneeId} is handling the robber${
+          myRobberMovePending ? " (you)" : ""
+        }.`
+      : null;
+
   // The normal board + surrounding HUD, always mounted (see SceneManager's
   // doc comments -- BoardCanvas must never unmount, even while the
   // blackjack minigame scene is showing on top of it).
   const boardAndHud = (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-      <div>
-        <h1>Game</h1>
-        <p>Room code: {roomCode}</p>
-        <p>Connection: {connectionStatus}</p>
-        {connectionStatus === "reconnecting" ? <p role="status">Reconnecting...</p> : null}
-        {resyncPending ? <p role="status">Resyncing...</p> : null}
-        <p>
-          Phase: {view.phase}
-          {rushMode
-            ? " -- no turns (rush mode)"
-            : ` -- ${isMyTurn ? "Your turn" : `${currentPlayerName}'s turn`}`}
-        </p>
-        {rushMode && rushRobberAssigneeId && (
-          <p>
-            {view.players[rushRobberAssigneeId]?.nickname ?? rushRobberAssigneeId} is handling the
-            robber{myRobberMovePending ? " (you)" : ""}.
-          </p>
-        )}
-
-        <OpponentRail opponents={opponents} currentTurnPlayerId={currentPlayerId} />
+    <div className={styles.boardHudRow}>
+      <div className={styles.centerColumn}>
+        <div className={styles.opponentStrip}>
+          <OpponentRail opponents={opponents} currentTurnPlayerId={currentPlayerId} />
+        </div>
 
         <ActionDock
           die1={diceRollEvent?.die1 ?? view.last_dice_roll?.[0] ?? null}
@@ -689,27 +691,22 @@ export default function Game() {
           }}
         />
 
-        <BoardCanvas
-          board={view.board}
-          legalVertexIds={legalVertexIds}
-          legalEdgeIds={legalEdgeIds}
-          onVertexClick={handleVertexClick}
-          onEdgeClick={handleEdgeClick}
-          nukeEvent={nukeEvent}
-        />
+        <div className={styles.boardArea}>
+          <BoardCanvas
+            board={view.board}
+            width={600}
+            height={420}
+            hexSize={32}
+            legalVertexIds={legalVertexIds}
+            legalEdgeIds={legalEdgeIds}
+            onVertexClick={handleVertexClick}
+            onEdgeClick={handleEdgeClick}
+            nukeEvent={nukeEvent}
+          />
+        </div>
+      </div>
 
-        {view.phase === "setup" && (
-          <p>
-            {isMySetupTurn
-              ? `Place your ${mySetupAction === "settlement" ? "settlement" : "road"}.`
-              : rushMode
-                ? "Setup complete -- waiting for other players to finish placing."
-                : setupExpectation
-                  ? `Waiting for ${view.players[setupExpectation.playerId]?.nickname ?? setupExpectation.playerId} to place.`
-                  : "Setup complete."}
-          </p>
-        )}
-
+      <div className={styles.sidebar}>
         {myId && myDiscardOwed != null && (
           <DiscardPanel
             hand={me?.hand ?? {}}
@@ -819,9 +816,7 @@ export default function Game() {
             </button>
           </div>
         )}
-      </div>
 
-      <div style={{ minWidth: 280 }}>
         <VpCounter
           victoryPoints={me?.victory_points ?? 0}
           targetVictoryPoints={view.settings.victory_points_target}
@@ -914,10 +909,24 @@ export default function Game() {
   );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div className={styles.screen}>
       <NukeToast toasts={nukeToasts} />
       <BlackjackToast toasts={blackjackToasts} />
-      <SceneManager phase={view.phase} boardAndHud={boardAndHud} minigameContent={minigameContent} />
+
+      <div className={styles.statusBar}>
+        <span className={styles.roomCode}>Room {roomCode}</span>
+        <span className={styles.statusMuted}>
+          {rushMode ? "no turns (rush mode)" : isMyTurn ? "Your turn" : `${currentPlayerName}'s turn`}
+        </span>
+        <span className={styles.statusMuted}>Phase: {view.phase}</span>
+        {setupNoteText && <span className={styles.statusNote}>{setupNoteText}</span>}
+        {rushRobberNoteText && <span className={styles.statusNote}>{rushRobberNoteText}</span>}
+        {resyncPending && <span className={styles.statusNote}>Resyncing...</span>}
+      </div>
+
+      <div className={styles.mainArea}>
+        <SceneManager phase={view.phase} boardAndHud={boardAndHud} minigameContent={minigameContent} />
+      </div>
     </div>
   );
 }

@@ -69,6 +69,13 @@ export function ActionDock({
   showEndTurn,
   onEndTurn,
 }: ActionDockProps) {
+  // Nothing to show (e.g. during SETUP, before any roll/build/end-turn
+  // action is relevant) -- render nothing rather than an empty styled
+  // shell with a visible background and no content.
+  if (!showDice && timerSeconds == null && !canRoll && !canAct) {
+    return null;
+  }
+
   return (
     <div className={styles.dock}>
       {showDice && (

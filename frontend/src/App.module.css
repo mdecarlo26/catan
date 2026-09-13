@@ -1,0 +1,28 @@
+.shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background: var(--color-bg-slate-deep);
+  border-bottom: 1px solid var(--color-border-slate-deep);
+  font-size: 0.8rem;
+  color: var(--color-text-slate);
+}
+
+.status {
+  color: #9aa0b4;
+  text-transform: capitalize;
+}
+
+.main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
