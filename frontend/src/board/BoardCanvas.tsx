@@ -12,8 +12,8 @@
  * are omitted -- e.g. while it isn't the viewer's turn).
  */
 import { useEffect, useRef, useState } from "react";
-import { Application, Container, Graphics, Text, TextStyle, Ticker } from "pixi.js";
-import type { BuildingType, EdgeId, PlayerId, PortType, VertexId, WireBoardView } from "../types/protocol";
+import { Application, Container, Graphics, Ticker } from "pixi.js";
+import type { BuildingType, EdgeId, PlayerId, VertexId, WireBoardView } from "../types/protocol";
 import {
   computeBoardGeometry,
   HEX_SIZE,
@@ -30,6 +30,7 @@ import { VertexNodeView } from "./VertexNode";
 import { EdgeSegmentView } from "./EdgeSegment";
 import { assignPlayerColorIndices, playerColor, PLAYER_COLOR_PALETTE, TERRAIN_LABELS } from "./theme";
 import type { NukeEventRecord } from "../state/gameStore";
+import { makePortMarker } from "./PortMarker";
 
 /**
  * Resolve a player -> palette-color-index function for `board`, matching
@@ -400,41 +401,6 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
   }, [ready, nukeEvent?.seq]);
 
   return <div ref={hostRef} style={{ width, height, lineHeight: 0 }} />;
-}
-
-const PORT_LABELS: Record<PortType, string> = {
-  generic: "3:1",
-  brick: "2:1 B",
-  lumber: "2:1 L",
-  ore: "2:1 O",
-  grain: "2:1 G",
-  wool: "2:1 W",
-};
-
-function makePortMarker(portType: PortType, x: number, y: number, hexSize: number) {
-  const container = new Container();
-  container.x = x;
-  container.y = y;
-  container.eventMode = "none";
-
-  const radius = hexSize * 0.22;
-  const bg = new Graphics();
-  bg.circle(0, 0, radius).fill({ color: 0xf3ecd2, alpha: 0.95 }).stroke({ width: 1.5, color: 0x1a1a1a, alpha: 0.8 });
-  container.addChild(bg);
-
-  const label = new Text({
-    text: PORT_LABELS[portType] ?? "?",
-    style: new TextStyle({
-      fontFamily: "Arial, sans-serif",
-      fontSize: Math.max(9, Math.round(radius * 0.62)),
-      fontWeight: "bold",
-      fill: 0x1a1a1a,
-    }),
-  });
-  label.anchor.set(0.5);
-  container.addChild(label);
-
-  return container;
 }
 
 // ---------------------------------------------------------------------
