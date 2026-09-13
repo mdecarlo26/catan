@@ -11,14 +11,14 @@
 
 .toast {
   background: #3a1010;
-  color: #ffe9e2;
-  border: 1px solid #a83232;
-  border-radius: 8px;
+  color: var(--color-text-danger);
+  border: 1px solid var(--color-border-danger);
+  border-radius: var(--radius-lg);
   padding: 0.6rem 0.9rem;
   font-family: system-ui, sans-serif;
   font-size: 0.9rem;
   font-weight: 600;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-toast);
   animation:
     nukeToastIn 0.25s ease-out,
     nukeToastOut 0.4s ease-in 3.6s forwards;

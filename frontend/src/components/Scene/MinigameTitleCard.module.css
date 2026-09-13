@@ -16,7 +16,7 @@
   font-weight: 900;
   font-size: clamp(2.5rem, 8vw, 5.5rem);
   letter-spacing: 0.18em;
-  color: #ffd166;
+  color: var(--color-gold-casino);
   text-shadow:
     0 0 18px rgba(255, 209, 102, 0.65),
     0 2px 0 #7a1f1f,

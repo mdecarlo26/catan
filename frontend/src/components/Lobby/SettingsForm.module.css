@@ -3,10 +3,10 @@
   flex-direction: column;
   gap: 0.85rem;
   padding: 0.75rem;
-  background: #1e2a22;
-  border: 1px solid #35492f;
-  border-radius: 8px;
-  color: #eef3ea;
+  background: var(--color-bg-olive);
+  border: 1px solid var(--color-border-olive);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-olive);
   font-family: system-ui, sans-serif;
 }
 
@@ -42,9 +42,9 @@
 .select {
   justify-self: end;
   background: #14201a;
-  color: #eef3ea;
+  color: var(--color-text-olive);
   border: 1px solid #45604a;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0.25rem 0.5rem;
   font-size: 0.9rem;
   min-width: 6rem;

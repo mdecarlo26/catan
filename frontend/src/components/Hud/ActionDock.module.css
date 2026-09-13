@@ -4,11 +4,11 @@
   align-items: flex-start;
   gap: 0.6rem;
   padding: 0.75rem;
-  background: #1c1f2a;
-  border: 1px solid #333a52;
-  border-radius: 10px;
+  background: var(--color-bg-slate);
+  border: 1px solid var(--color-border-slate);
+  border-radius: var(--radius-xl);
   font-family: system-ui, sans-serif;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-panel);
 }
 
 .diceRow {
@@ -21,19 +21,19 @@
   font-size: 1.1rem;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: #e7e9f3;
-  background: #14161c;
+  color: var(--color-text-slate);
+  background: var(--color-bg-slate-deep);
   border: 1px solid #3d4460;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.2rem 0.6rem;
   letter-spacing: 0.03em;
 }
 
 .rollButton {
-  background: #33507a;
+  background: var(--color-accent-blue-strong);
   color: #ffffff;
-  border: 1px solid #4a6ea3;
-  border-radius: 6px;
+  border: 1px solid var(--color-accent-blue);
+  border-radius: var(--radius-md);
   padding: 0.55rem 1.1rem;
   font-size: 0.95rem;
   font-weight: 700;
@@ -52,9 +52,9 @@
 
 .actionButton {
   background: #262b3d;
-  color: #e7e9f3;
+  color: var(--color-text-slate);
   border: 1px solid #3d4460;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.45rem 0.8rem;
   font-size: 0.85rem;
   font-weight: 600;
@@ -62,7 +62,7 @@
 }
 
 .actionButton:hover:not(:disabled) {
-  background: #333a52;
+  background: var(--color-border-slate);
 }
 
 .actionButton:disabled {
@@ -74,7 +74,7 @@
   background: transparent;
   color: #b7bcd6;
   border: 1px solid #3d4460;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.45rem 0.8rem;
   font-size: 0.85rem;
   cursor: pointer;
@@ -85,10 +85,10 @@
 }
 
 .endTurnButton {
-  background: #4a6ea3;
+  background: var(--color-accent-blue);
   color: #ffffff;
   border: 1px solid #6c93cc;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.45rem 0.9rem;
   font-size: 0.85rem;
   font-weight: 700;

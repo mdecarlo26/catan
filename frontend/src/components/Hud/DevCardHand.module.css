@@ -27,10 +27,10 @@
   justify-content: center;
   gap: 0.2rem;
   padding: 0.3rem 0.25rem;
-  border-radius: 8px;
-  border: 1px solid #333a52;
-  background: #1c1f2a;
-  color: #e7e9f3;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-slate);
+  background: var(--color-bg-slate);
+  color: var(--color-text-slate);
   cursor: default;
   transform-origin: 50% 100%;
   transform: translate(var(--fan-x), var(--fan-y)) rotate(var(--fan-rot));
@@ -38,7 +38,7 @@
     transform 0.15s ease,
     opacity 0.15s ease,
     box-shadow 0.15s ease;
-  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-card);
 }
 
 .icon {
@@ -60,8 +60,8 @@
 
 .playable:not(:disabled):hover {
   transform: translate(var(--fan-x), calc(var(--fan-y) - 14px)) rotate(var(--fan-rot));
-  border-color: #4a6ea3;
-  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5);
+  border-color: var(--color-accent-blue);
+  box-shadow: var(--shadow-card-hover);
   z-index: 999 !important;
 }
 
@@ -84,15 +84,15 @@
   opacity: 1;
   cursor: default;
   background: linear-gradient(180deg, #4a3c14 0%, #2a2210 100%);
-  border-color: #e8c565;
+  border-color: var(--color-gold-select);
   box-shadow:
-    0 0 0 1px #e8c565 inset,
-    0 3px 8px rgba(0, 0, 0, 0.4);
+    0 0 0 1px var(--color-gold-select) inset,
+    var(--shadow-card);
 }
 
 .vpBadge {
   font-size: 0.5rem;
   font-weight: 700;
   letter-spacing: 0.08em;
-  color: #e8c565;
+  color: var(--color-gold-select);
 }

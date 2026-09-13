@@ -3,10 +3,10 @@
   flex-direction: column;
   gap: 0.6rem;
   padding: 0.75rem;
-  background: #1c1f2a;
-  border: 1px solid #333a52;
-  border-radius: 8px;
-  color: #e7e9f3;
+  background: var(--color-bg-slate);
+  border: 1px solid var(--color-border-slate);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-slate);
   font-family: system-ui, sans-serif;
   min-width: 18rem;
 }
@@ -21,17 +21,17 @@
   flex: 1;
   padding: 0.35rem 0.5rem;
   font-size: 0.8rem;
-  border-radius: 5px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   border: 1px solid #3d4460;
-  background: #14161c;
+  background: var(--color-bg-slate-deep);
   color: #b7bcd6;
 }
 
 .tabActive {
-  background: #33507a;
+  background: var(--color-accent-blue-strong);
   color: #ffffff;
-  border-color: #4a6ea3;
+  border-color: var(--color-accent-blue);
 }
 
 .picker {
@@ -60,9 +60,9 @@
   flex-direction: column;
   align-items: center;
   gap: 0.2rem;
-  background: #14161c;
-  border: 1px solid #2c2f3b;
-  border-radius: 6px;
+  background: var(--color-bg-slate-deep);
+  border: 1px solid var(--color-border-slate-deep);
+  border-radius: var(--radius-md);
   padding: 0.3rem 0.4rem;
 }
 
@@ -79,10 +79,10 @@
 .stepper button {
   width: 1.3rem;
   height: 1.3rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   border: 1px solid #3d4460;
   background: #232637;
-  color: #e7e9f3;
+  color: var(--color-text-slate);
   cursor: pointer;
   font-size: 0.85rem;
   line-height: 1;
@@ -117,10 +117,10 @@
 }
 
 .submitButton {
-  background: #3f7a3f;
-  color: #eef3ea;
-  border: 1px solid #5aa15a;
-  border-radius: 5px;
+  background: var(--color-accent-green);
+  color: var(--color-text-olive);
+  border: 1px solid var(--color-accent-green-border);
+  border-radius: var(--radius-md);
   padding: 0.35rem 0.7rem;
   font-size: 0.78rem;
   font-weight: 700;
@@ -172,9 +172,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  background: #14161c;
-  border: 1px solid #2c2f3b;
-  border-radius: 5px;
+  background: var(--color-bg-slate-deep);
+  border: 1px solid var(--color-border-slate-deep);
+  border-radius: var(--radius-md);
   padding: 0.3rem 0.5rem;
   font-size: 0.78rem;
 }
@@ -186,16 +186,16 @@
 
 .acceptButton,
 .declineButton {
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0.2rem 0.5rem;
   font-size: 0.72rem;
   cursor: pointer;
 }
 
 .acceptButton {
-  background: #3f7a3f;
-  color: #eef3ea;
-  border: 1px solid #5aa15a;
+  background: var(--color-accent-green);
+  color: var(--color-text-olive);
+  border: 1px solid var(--color-accent-green-border);
 }
 
 .declineButton {

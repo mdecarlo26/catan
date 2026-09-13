@@ -3,10 +3,10 @@
   font-weight: 700;
   font-size: 0.95rem;
   padding: 0.55rem 1.4rem;
-  background: #3f7a3f;
-  color: #eef3ea;
-  border: 1px solid #5aa15a;
-  border-radius: 6px;
+  background: var(--color-accent-green);
+  color: var(--color-text-olive);
+  border: 1px solid var(--color-accent-green-border);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 

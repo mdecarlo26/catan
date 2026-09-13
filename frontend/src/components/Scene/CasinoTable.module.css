@@ -30,7 +30,7 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   font-size: 1.1rem;
-  color: #ffd166;
+  color: var(--color-gold-casino);
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
 }
 

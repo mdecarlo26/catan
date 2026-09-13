@@ -13,10 +13,10 @@
   align-items: center;
   gap: 0.6rem;
   padding: 0.45rem 0.6rem;
-  background: #1e2a22;
-  border: 1px solid #35492f;
-  border-radius: 6px;
-  color: #eef3ea;
+  background: var(--color-bg-olive);
+  border: 1px solid var(--color-border-olive);
+  border-radius: var(--radius-md);
+  color: var(--color-text-olive);
 }
 
 .seat {
@@ -40,9 +40,9 @@
   font-size: 0.65rem;
   font-weight: 700;
   letter-spacing: 0.04em;
-  background: #c99a3a;
+  background: var(--color-gold-turn);
   color: #221a08;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   padding: 0.15rem 0.35rem;
 }
 
@@ -52,7 +52,7 @@
   letter-spacing: 0.04em;
   background: #34506b;
   color: #e4eef7;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   padding: 0.15rem 0.35rem;
 }
 
@@ -83,7 +83,7 @@
   background: #5c2323;
   color: #f3e0e0;
   border: 1px solid #7a3030;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0.25rem 0.55rem;
   font-size: 0.75rem;
   cursor: pointer;

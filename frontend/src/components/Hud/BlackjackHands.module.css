@@ -2,10 +2,10 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  border: 2px solid #2f7a3a;
-  background: #0f2113;
-  color: #e5ffe9;
-  border-radius: 8px;
+  border: 2px solid var(--color-border-felt);
+  background: var(--color-bg-felt);
+  color: var(--color-text-felt);
+  border-radius: var(--radius-lg);
   padding: 0.6rem 0.8rem;
   margin: 8px 0;
   font-family: system-ui, sans-serif;
@@ -13,14 +13,14 @@
 
 .hand {
   border: 1px solid #245c2c;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.4rem 0.6rem;
   background: rgba(255, 255, 255, 0.03);
 }
 
 .handActive {
-  border-color: #ffd166;
-  box-shadow: 0 0 0 1px #ffd166 inset;
+  border-color: var(--color-gold-casino);
+  box-shadow: 0 0 0 1px var(--color-gold-casino) inset;
 }
 
 .handHeader {
@@ -34,12 +34,12 @@
   font-size: 0.75rem;
   text-transform: uppercase;
   padding: 0.1rem 0.4rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: #274d2b;
 }
 
 .badge[data-status="busted"] {
-  background: #5a1a1a;
+  background: var(--color-bg-danger-strong);
 }
 
 .badge[data-status="stood"] {
@@ -66,7 +66,7 @@
   height: 2.4rem;
   padding: 0 0.3rem;
   background: #fdfdfd;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-weight: 700;
   font-size: 0.9rem;
 }

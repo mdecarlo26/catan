@@ -1,0 +1,88 @@
+/**
+ * Shared design tokens for the frontend redesign's HUD/Scene CSS modules
+ * (Phase 3 polish pass -- see plan doc "sharded-roaming-quasar").
+ *
+ * These are harmonized from values already in use across the Hud/Scene/
+ * Lobby .module.css files, not new brand colors. Each token's comment
+ * names the representative source so future edits can tell what family
+ * a given panel belongs to. Not every module has been switched to use
+ * every token here -- only clearly-inconsistent one-off values were
+ * replaced; where modules already agreed on a value, they were left
+ * alone rather than forced onto a token.
+ */
+
+:root {
+  /* ---- Neutral panel families (background / border / text triplets) ---- */
+
+  /* "Slate" -- action/trade HUD chrome (ActionDock, TradePanel, card fans, TurnLog). */
+  --color-bg-slate: #1c1f2a;
+  --color-bg-slate-deep: #14161c;
+  --color-border-slate: #333a52;
+  --color-border-slate-deep: #2c2f3b;
+  --color-text-slate: #e7e9f3;
+
+  /* "Olive" -- lobby + opponent-panel green-tinted chrome (echoes the
+     board's forest terrain hue so the HUD reads as the same world). */
+  --color-bg-olive: #1e2a22;
+  --color-border-olive: #35492f;
+  --color-text-olive: #eef3ea;
+
+  /* "Tan" -- warm neutrals for resource-y readouts (VpCounter, ResourceTray,
+     dev-card count badge, dice faces). */
+  --color-bg-tan: #24201a;
+  --color-border-tan: #4a3f2c;
+  --color-text-tan: #f3ead9;
+
+  /* "Danger" -- discard / nuke red family. */
+  --color-bg-danger: #2a1414;
+  --color-bg-danger-strong: #5a1a1a; /* buttons within the danger family */
+  --color-border-danger: #a83232;
+  --color-text-danger: #ffe9e2;
+
+  /* "Felt" -- blackjack / casino-table green. */
+  --color-bg-felt: #0f2113;
+  --color-border-felt: #2f7a3a;
+  --color-text-felt: #e5ffe9;
+
+  /* ---- Accent colors ---- */
+
+  /* Gold used for "it's this player's turn" rings and host badges. */
+  --color-gold-turn: #c99a3a;
+  /* Gold used for "selected" / victory-point card highlighting. */
+  --color-gold-select: #e8c565;
+  /* Gold used for the blackjack/casino minigame's own accent. */
+  --color-gold-casino: #ffd166;
+
+  /* Blue used for primary/active HUD actions (roll, active trade tab). */
+  --color-accent-blue: #4a6ea3;
+  --color-accent-blue-strong: #33507a;
+
+  /* Green used for confirm/start/accept actions. */
+  --color-accent-green: #3f7a3f;
+  --color-accent-green-border: #5aa15a;
+
+  /* ---- Border-radius scale ---- */
+  --radius-sm: 4px; /* small badges, chips, inline steppers */
+  --radius-md: 6px; /* buttons, inputs, tabs */
+  --radius-lg: 8px; /* panels/cards */
+  --radius-xl: 10px; /* larger elevated chrome (action dock, hand-fan cards) */
+  --radius-pill: 999px; /* pill-shaped badges */
+
+  /* ---- Spacing scale ---- */
+  --space-1: 0.25rem;
+  --space-2: 0.4rem;
+  --space-3: 0.6rem;
+  --space-4: 0.75rem;
+  --space-5: 1rem;
+
+  /* ---- Shadow / depth ---- */
+  /* Flat panels resting on the background (dock, discard/nuke panels, counters). */
+  --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.25);
+  /* Toasts (kept distinct from --shadow-panel: slightly stronger, matches
+     the two toast modules which already agreed with each other). */
+  --shadow-toast: 0 2px 10px rgba(0, 0, 0, 0.35);
+  /* A hand card at rest, lifted slightly off the table. */
+  --shadow-card: 0 4px 10px rgba(0, 0, 0, 0.4);
+  /* A hand card actively hovered/lifted further. */
+  --shadow-card-hover: 0 8px 16px rgba(0, 0, 0, 0.5);
+}

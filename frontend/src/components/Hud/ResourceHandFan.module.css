@@ -25,10 +25,10 @@
   flex-direction: column;
   align-items: center;
   padding: 0.45rem 0.4rem 0.55rem;
-  border-radius: 10px;
-  border: 2px solid #333a52;
+  border-radius: var(--radius-xl);
+  border: 2px solid var(--color-border-slate);
   background: linear-gradient(180deg, #1e2230 0%, #12141c 100%);
-  color: #f3ead9;
+  color: var(--color-text-tan);
   cursor: pointer;
   transform-origin: 50% 100%;
   transform: translate(var(--fan-x), var(--fan-y)) rotate(var(--fan-rot));
@@ -36,7 +36,7 @@
     transform 0.15s ease,
     box-shadow 0.15s ease,
     border-color 0.15s ease;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-card);
 }
 
 .card:hover:not(:disabled) {
@@ -49,9 +49,9 @@
 }
 
 .selected {
-  border-color: #e8c565;
+  border-color: var(--color-gold-select);
   box-shadow:
-    0 0 0 2px #e8c565,
+    0 0 0 2px var(--color-gold-select),
     0 10px 20px rgba(0, 0, 0, 0.5);
   transform: translate(var(--fan-x), calc(var(--fan-y) - 18px)) rotate(var(--fan-rot)) scale(1.08);
   z-index: 998 !important;
