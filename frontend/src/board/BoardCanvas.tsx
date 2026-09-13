@@ -386,7 +386,7 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
     }, NUKE_DEDUP_MS);
     nukeDedupTimeoutsRef.current.add(timeoutId);
 
-    animateNukeDrop(
+    animateNukeFlyoverThenDrop(
       effectsLayer,
       app.ticker,
       vertexGeom,
@@ -394,7 +394,8 @@ export function BoardCanvas(props: BoardCanvasProps): JSX.Element {
       hexSize,
       activeTickersRef.current,
       victimColorIndex,
-      nukeEvent.destroyedBuildingType
+      nukeEvent.destroyedBuildingType,
+      width
     );
     // Intentionally keyed on nukeEvent?.seq alone -- see comment above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -542,10 +543,15 @@ function animateDestroyLine(
 
 const NUKE_FALL_MS = 400;
 const NUKE_IMPACT_MS = 400;
+/** Duration of the plane-flyover lead-in (see `animateNukeFlyoverThenDrop`
+ * below) that plays before the bomb fall+impact sequence starts. */
+const NUKE_FLYOVER_MS = 850;
 /** How long a vertex/edge key stays in `nukeDedupKeysRef` -- must outlast
- * both the impact phase and the (independently-timed) road-line flash it
- * kicks off, so the diff-based pass never fires a duplicate for either. */
-const NUKE_DEDUP_MS = NUKE_FALL_MS + Math.max(NUKE_IMPACT_MS, DESTROY_FLASH_MS) + 100;
+ * the flyover lead-in *plus* both the impact phase and the
+ * (independently-timed) road-line flash it kicks off, so the diff-based
+ * pass never fires a duplicate for either while any part of the combined
+ * flyover -> fall -> impact sequence is still in flight. */
+const NUKE_DEDUP_MS = NUKE_FLYOVER_MS + NUKE_FALL_MS + Math.max(NUKE_IMPACT_MS, DESTROY_FLASH_MS) + 100;
 const EXPLOSION_ORANGE = 0xff5a3c;
 
 function easeInQuad(t: number): number {
@@ -668,6 +674,146 @@ function animateNukeDrop(
       ticker.remove(tick);
       activeTickers.delete(tick);
       impact.destroy();
+    }
+  };
+  activeTickers.add(tick);
+  ticker.add(tick);
+}
+
+// ---------------------------------------------------------------------
+// Plane flyover: a lead-in that plays *before* the bomb fall+impact
+// above. Composes strictly in front of `animateNukeDrop` -- this section
+// draws its own procedural plane, flies it across the board at constant
+// altitude/velocity, and on reaching the target's x position hands off to
+// the existing, untouched `animateNukeDrop` to run the fall+impact on its
+// own independent timeline, exactly as it does when called directly.
+// ---------------------------------------------------------------------
+
+/** Draws a small procedural plane silhouette -- fuselage + nose, two
+ * wing triangles, and a small tail fin -- same modest effort level as
+ * `drawBombShape`, pure Graphics, no image/sprite assets. Drawn nose-first
+ * along +x; callers flip it horizontally (`scale.x = -1`) to face left. */
+function drawPlaneShape(g: Graphics, size: number): void {
+  g.clear();
+  // Fuselage.
+  g.roundRect(-size * 0.32, -size * 0.05, size * 0.5, size * 0.1, size * 0.04)
+    .fill({ color: 0x8a97a6, alpha: 0.95 })
+    .stroke({ width: 1.2, color: 0x2b2b2b });
+  // Nose cone.
+  g.poly([size * 0.18, -size * 0.05, size * 0.18, size * 0.05, size * 0.34, 0], true)
+    .fill({ color: 0x8a97a6, alpha: 0.95 })
+    .stroke({ width: 1, color: 0x2b2b2b });
+  // Wings (one on each side of the fuselage).
+  g.poly([-size * 0.04, -size * 0.03, size * 0.06, -size * 0.03, -size * 0.02, -size * 0.34], true)
+    .fill({ color: 0x5c6773, alpha: 0.95 })
+    .stroke({ width: 1, color: 0x2b2b2b });
+  g.poly([-size * 0.04, size * 0.03, size * 0.06, size * 0.03, -size * 0.02, size * 0.34], true)
+    .fill({ color: 0x5c6773, alpha: 0.95 })
+    .stroke({ width: 1, color: 0x2b2b2b });
+  // Tail fin.
+  g.poly([-size * 0.32, -size * 0.02, -size * 0.32, size * 0.02, -size * 0.42, -size * 0.14], true)
+    .fill({ color: 0x5c6773, alpha: 0.95 })
+    .stroke({ width: 1, color: 0x2b2b2b });
+}
+
+/** How long the plane keeps flying in a straight line after releasing its
+ * payload before it's torn down -- just enough to visibly clear the board
+ * rather than vanishing the instant the bomb is released. */
+const NUKE_FLYOVER_EXIT_MS = 300;
+
+/**
+ * Plane-flyover lead-in for the nuke-drop sequence:
+ *   1. Flyover (~NUKE_FLYOVER_MS, constant velocity): a plane enters from
+ *      off-canvas on whichever horizontal side is farther from the
+ *      target's x position, at a fixed altitude above the board, and
+ *      flies straight toward the target's x.
+ *   2. Release: the instant the plane's x reaches `vertexPixel.x`, this
+ *      removes its own ticker callback's per-frame flight-update branch
+ *      and calls the existing, unmodified `animateNukeDrop(...)` with the
+ *      exact same arguments it would otherwise have been called with --
+ *      the fall+impact plays out on its own independent timeline from
+ *      that moment, identically to calling `animateNukeDrop` directly.
+ *   3. Exit: the plane itself keeps flying in a straight line (fading
+ *      out) for `NUKE_FLYOVER_EXIT_MS` more, then removes its ticker
+ *      callback and destroys itself -- same self-removing pattern as
+ *      every other animation in this file.
+ *
+ * Takes one parameter beyond `animateNukeDrop`'s list -- `canvasWidth`
+ * (the `width` prop from `BoardCanvas`) -- because picking the entry side
+ * and the off-canvas start/end x positions requires knowing the canvas's
+ * horizontal extent, which nothing else passed in captures. `effectsLayer`
+ * is a child of `root` (see the mount effect above), whose `x` is the
+ * translation that centers the board in the canvas, so `effectsLayer`'s
+ * *local* left/right canvas edges are derived from `canvasWidth` and
+ * `effectsLayer.parent.x` (i.e. `root.x`) rather than needing `root.x`
+ * threaded in as its own argument too.
+ */
+function animateNukeFlyoverThenDrop(
+  effectsLayer: Container,
+  ticker: Ticker,
+  vertexPixel: Point,
+  edgeGeom: EdgeGeometry | null,
+  size: number,
+  activeTickers: Set<(t: Ticker) => void>,
+  victimColorIndex: number,
+  buildingType: BuildingType | null,
+  canvasWidth: number
+): void {
+  const rootX = (effectsLayer.parent as Container | null)?.x ?? 0;
+  const localLeftEdge = -rootX;
+  const localRightEdge = canvasWidth - rootX;
+
+  // Entry side = whichever horizontal canvas edge is farther from the
+  // target, so the flight path always crosses over/near it rather than
+  // starting right next to it.
+  const distToLeft = vertexPixel.x - localLeftEdge;
+  const distToRight = localRightEdge - vertexPixel.x;
+  const enterFromLeft = distToLeft >= distToRight;
+
+  const margin = size * 2;
+  const startX = enterFromLeft ? localLeftEdge - margin : localRightEdge + margin;
+  const flyY = vertexPixel.y - size * 4.2;
+
+  const plane = new Graphics();
+  drawPlaneShape(plane, size);
+  plane.scale.x = enterFromLeft ? 1 : -1;
+  plane.x = startX;
+  plane.y = flyY;
+  effectsLayer.addChild(plane);
+
+  const totalDeltaX = vertexPixel.x - startX;
+  const velocityXPerMs = totalDeltaX / NUKE_FLYOVER_MS;
+
+  let released = false;
+  const start = performance.now();
+  const tick = () => {
+    const elapsed = performance.now() - start;
+
+    if (!released) {
+      const t = Math.min(1, elapsed / NUKE_FLYOVER_MS);
+      plane.x = startX + totalDeltaX * t;
+      plane.y = flyY;
+      if (t >= 1) {
+        released = true;
+        // Hand off to the existing, unmodified fall+impact sequence --
+        // same arguments it would receive if called directly, running on
+        // its own independent timeline from this moment.
+        animateNukeDrop(effectsLayer, ticker, vertexPixel, edgeGeom, size, activeTickers, victimColorIndex, buildingType);
+      }
+      return;
+    }
+
+    // Post-release: keep flying straight off-screen, fading out, then
+    // self-remove -- same lifecycle every other animation in this file
+    // follows.
+    const exitElapsed = elapsed - NUKE_FLYOVER_MS;
+    const exitT = Math.min(1, exitElapsed / NUKE_FLYOVER_EXIT_MS);
+    plane.x = vertexPixel.x + velocityXPerMs * exitElapsed;
+    plane.alpha = 1 - exitT;
+    if (exitT >= 1) {
+      ticker.remove(tick);
+      activeTickers.delete(tick);
+      plane.destroy();
     }
   };
   activeTickers.add(tick);
