@@ -1,0 +1,74 @@
+.panel {
+  border: 1px solid #a83232;
+  background: #2a1414;
+  color: #ffe9e2;
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+  margin: 0.5rem 0;
+  font-family: system-ui, sans-serif;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.panel p {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.panel p:last-of-type {
+  margin-bottom: 0.6rem;
+}
+
+.title {
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.playerList {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+
+.playerButton {
+  background: #5a1a1a;
+  color: #ffe9e2;
+  border: 1px solid #a83232;
+  border-radius: 6px;
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.playerButton:hover {
+  background: #7a2222;
+}
+
+.confirmButton {
+  background: #a83232;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  margin-right: 0.5rem;
+}
+
+.confirmButton:hover {
+  background: #c23e3e;
+}
+
+.cancelButton {
+  background: transparent;
+  color: #ffb3a3;
+  border: 1px solid #6b3030;
+  border-radius: 6px;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+}
+
+.cancelButton:hover {
+  background: #3a1c1c;
+}

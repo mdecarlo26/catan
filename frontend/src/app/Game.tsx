@@ -5,22 +5,30 @@ import { loadSessionForRoom } from "../api/session";
 import { bindGameStoreToWsClient, isNukeEligibleHand, useGameStore } from "../state/gameStore";
 import { BoardCanvas, buildBoardGraph, legalCityVertexIds, legalRoadEdgeIds, legalSettlementVertexIds } from "../board";
 import {
+  ActionDock,
   BlackjackBetPanel,
   BlackjackHands,
   BlackjackToast,
   DevCardHand,
-  DiceRoll,
+  DiscardPanel,
   NukeButton,
+  NukeFlowPanel,
   NukeToast,
   ResourceTray,
   TradePanel,
   TurnLog,
   VpCounter,
-  RESOURCE_ICON,
   RESOURCE_LABEL,
   RESOURCE_ORDER,
 } from "../components/Hud";
-import type { BlackjackBetStep, BlackjackToastItem, NukeToastItem, PortAccess, TurnLogEntry } from "../components/Hud";
+import type {
+  BlackjackBetStep,
+  BlackjackToastItem,
+  NukeStep,
+  NukeToastItem,
+  PortAccess,
+  TurnLogEntry,
+} from "../components/Hud";
 import type {
   BankTradePayload,
   DevCardType,
@@ -38,10 +46,6 @@ import type {
 import { hexKey, vertexIdKey } from "../board/hexMath";
 
 type BuildMode = "settlement" | "road" | "city" | "road_building" | null;
-
-/** Steps of the PLAY_NUKE target-selection flow: pick the victim, then one
- * of their settlements/cities, then one of their roads, then confirm. */
-type NukeStep = "idle" | "pick_player" | "pick_vertex" | "pick_edge" | "confirm";
 
 /** The forward-then-reverse 2N-long setup placement sequence, mirroring
  * backend/app/game/rules/setup_strategies.py's SnakeDraftSetup.draft_order. */
@@ -105,135 +109,6 @@ function computePortAccess(board: WireBoardView, playerId: PlayerId): PortAccess
     result.push({ port_type: port.port_type, rate: port.port_type === "generic" ? 3 : 2 });
   }
   return result;
-}
-
-/** Minimal +/- resource picker, bounded by `hand`, used for the discard UI. */
-function ResourceStepper({
-  hand,
-  selection,
-  onChange,
-}: {
-  hand: ResourceHand;
-  selection: ResourceHand;
-  onChange: (next: ResourceHand) => void;
-}) {
-  return (
-    <div style={{ display: "flex", gap: 12 }}>
-      {RESOURCE_ORDER.map((type) => {
-        const owned = hand[type] ?? 0;
-        const count = selection[type] ?? 0;
-        return (
-          <div key={type} title={RESOURCE_LABEL[type]}>
-            <div>
-              {RESOURCE_ICON[type]} {count}/{owned}
-            </div>
-            <button
-              type="button"
-              disabled={count <= 0}
-              onClick={() => onChange({ ...selection, [type]: count - 1 })}
-            >
-              -
-            </button>
-            <button
-              type="button"
-              disabled={count >= owned}
-              onClick={() => onChange({ ...selection, [type]: count + 1 })}
-            >
-              +
-            </button>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function DiscardPanel({
-  hand,
-  required,
-  onSubmit,
-}: {
-  hand: ResourceHand;
-  required: number;
-  onSubmit: (resources: ResourceHand) => void;
-}) {
-  const [selection, setSelection] = useState<ResourceHand>({});
-  const total = RESOURCE_ORDER.reduce((sum, type) => sum + (selection[type] ?? 0), 0);
-  return (
-    <div role="alert" style={{ border: "2px solid firebrick", padding: 8, margin: "8px 0" }}>
-      <p>
-        You must discard {required} cards ({total}/{required} selected).
-      </p>
-      <ResourceStepper hand={hand} selection={selection} onChange={setSelection} />
-      <button type="button" disabled={total !== required} onClick={() => onSubmit(selection)}>
-        Discard
-      </button>
-    </div>
-  );
-}
-
-/**
- * The PLAY_NUKE target-selection flow's inline panel: which sub-step it's
- * on drives which prompt/controls show. Vertex/edge picking itself
- * happens on the board (BoardCanvas, driven by the legalVertexIds/
- * legalEdgeIds computed in the component below) -- this panel is just the
- * player-pick list, running commentary, and confirm/cancel controls.
- */
-function NukeFlowPanel({
-  step,
-  otherPlayers,
-  targetPlayerId,
-  onPickPlayer,
-  onConfirm,
-  onCancel,
-}: {
-  step: NukeStep;
-  otherPlayers: readonly PlayerSummary[];
-  targetPlayerId: PlayerId | null;
-  onPickPlayer: (playerId: PlayerId) => void;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  if (step === "idle") return null;
-  const targetName = targetPlayerId
-    ? otherPlayers.find((p) => p.player_id === targetPlayerId)?.nickname ?? targetPlayerId
-    : null;
-
-  return (
-    <div style={{ border: "2px solid #a83232", background: "#2a1414", color: "#ffe9e2", padding: 8, margin: "8px 0" }}>
-      <p style={{ margin: "0 0 4px", fontWeight: 700 }}>{"\u{1F4A3}"} Drop Nuke</p>
-
-      {step === "pick_player" && (
-        <>
-          <p>Choose a target player:</p>
-          {otherPlayers.map((p) => (
-            <button key={p.player_id} type="button" onClick={() => onPickPlayer(p.player_id)}>
-              {p.nickname}
-            </button>
-          ))}
-        </>
-      )}
-
-      {step === "pick_vertex" && <p>Click one of {targetName}'s settlements/cities on the board.</p>}
-
-      {step === "pick_edge" && <p>Now click one of {targetName}'s roads on the board.</p>}
-
-      {step === "confirm" && (
-        <>
-          <p>
-            Destroy {targetName}'s selected settlement/city and road? This spends 2 of each resource (10 cards).
-          </p>
-          <button type="button" onClick={onConfirm}>
-            Confirm Nuke
-          </button>
-        </>
-      )}
-
-      <button type="button" onClick={onCancel}>
-        Cancel
-      </button>
-    </div>
-  );
 }
 
 const PLAYABLE_DEV_CARDS: readonly DevCardType[] = [
@@ -729,6 +604,12 @@ export default function Game() {
   const currentPlayerId = view.turn_order[view.current_player_index];
   const currentPlayerName = view.players[currentPlayerId]?.nickname ?? currentPlayerId;
 
+  // ActionDock (dice/timer/action-buttons) gates -- identical conditions
+  // to what was previously computed inline at each JSX call site.
+  const canRoll = !rushMode && view.phase === "roll" && isMyTurn && !pending;
+  const showDice = !!(view.last_dice_roll || diceRollEvent);
+  const showConfirmSingleRoad = buildMode === "road_building" && roadBuildingEdges.length === 1;
+
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
       <NukeToast toasts={nukeToasts} />
@@ -745,22 +626,37 @@ export default function Game() {
             ? " -- no turns (rush mode)"
             : ` -- ${isMyTurn ? "Your turn" : `${currentPlayerName}'s turn`}`}
         </p>
-        {rushMode && rushRollCountdownSeconds != null && (
-          <p>Next auto-roll in {rushRollCountdownSeconds}s</p>
-        )}
         {rushMode && rushRobberAssigneeId && (
           <p>
             {view.players[rushRobberAssigneeId]?.nickname ?? rushRobberAssigneeId} is handling the
             robber{myRobberMovePending ? " (you)" : ""}.
           </p>
         )}
-        {(view.last_dice_roll || diceRollEvent) && (
-          <DiceRoll
-            die1={diceRollEvent?.die1 ?? view.last_dice_roll?.[0] ?? null}
-            die2={diceRollEvent?.die2 ?? view.last_dice_roll?.[1] ?? null}
-            rollSeq={diceRollEvent?.seq ?? null}
-          />
-        )}
+
+        <ActionDock
+          die1={diceRollEvent?.die1 ?? view.last_dice_roll?.[0] ?? null}
+          die2={diceRollEvent?.die2 ?? view.last_dice_roll?.[1] ?? null}
+          rollSeq={diceRollEvent?.seq ?? null}
+          showDice={showDice}
+          timerSeconds={rushMode ? rushRollCountdownSeconds : null}
+          canRoll={canRoll}
+          onRoll={() => wsClient.send({ type: "ROLL_DICE", payload: {} })}
+          canAct={canAct}
+          buildMode={buildMode}
+          onSelectBuildMode={(mode) => setBuildMode(mode)}
+          onBuyDevCard={() => wsClient.send({ type: "BUY_DEV_CARD", payload: {} })}
+          onCancelBuildMode={() => {
+            setBuildMode(null);
+            setRoadBuildingEdges([]);
+          }}
+          showConfirmSingleRoad={showConfirmSingleRoad}
+          onConfirmSingleRoad={confirmSingleRoadBuilding}
+          showEndTurn={!rushMode}
+          onEndTurn={() => {
+            setBuildMode(null);
+            wsClient.send({ type: "END_TURN", payload: {} });
+          }}
+        />
 
         <BoardCanvas
           board={view.board}
@@ -781,12 +677,6 @@ export default function Game() {
                   ? `Waiting for ${view.players[setupExpectation.playerId]?.nickname ?? setupExpectation.playerId} to place.`
                   : "Setup complete."}
           </p>
-        )}
-
-        {!rushMode && view.phase === "roll" && isMyTurn && !pending && (
-          <button type="button" onClick={() => wsClient.send({ type: "ROLL_DICE", payload: {} })}>
-            Roll Dice
-          </button>
         )}
 
         {myId && myDiscardOwed != null && (
@@ -869,47 +759,6 @@ export default function Game() {
               </div>
             )}
           </>
-        )}
-
-        {canAct && (
-          <div style={{ margin: "8px 0" }}>
-            <button type="button" disabled={buildMode === "settlement"} onClick={() => setBuildMode("settlement")}>
-              Build Settlement
-            </button>
-            <button type="button" disabled={buildMode === "road"} onClick={() => setBuildMode("road")}>
-              Build Road
-            </button>
-            <button type="button" disabled={buildMode === "city"} onClick={() => setBuildMode("city")}>
-              Build City
-            </button>
-            <button type="button" onClick={() => wsClient.send({ type: "BUY_DEV_CARD", payload: {} })}>
-              Buy Dev Card
-            </button>
-            {buildMode && (
-              <button type="button" onClick={() => { setBuildMode(null); setRoadBuildingEdges([]); }}>
-                Cancel
-              </button>
-            )}
-            {buildMode === "road_building" && roadBuildingEdges.length === 1 && (
-              <button type="button" onClick={confirmSingleRoadBuilding}>
-                Build just this 1 road
-              </button>
-            )}
-            {/* Rush mode has no turns to end -- END_TURN is rejected
-                outright server-side (see rules_engine._validate_end_turn),
-                so the control is simply not shown. */}
-            {!rushMode && (
-              <button
-                type="button"
-                onClick={() => {
-                  setBuildMode(null);
-                  wsClient.send({ type: "END_TURN", payload: {} });
-                }}
-              >
-                End Turn
-              </button>
-            )}
-          </div>
         )}
 
         {devCardPrompt === "monopoly" && (
