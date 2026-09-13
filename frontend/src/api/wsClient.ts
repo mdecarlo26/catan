@@ -74,9 +74,13 @@ const MAX_RECONNECT_DELAY_MS = 15_000;
 const RECONNECT_JITTER_MS = 250;
 
 function defaultWsBaseUrl(): string {
+  // VITE_WS_URL is the full WS base, already including the /ws path
+  // segment (e.g. "/ws" in prod, "ws://localhost:8000/ws" in dev) --
+  // openSocket() appends only the room code on top of this, never "/ws"
+  // again.
   const fromEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> })
     .env?.VITE_WS_URL;
-  return fromEnv ?? "ws://localhost:8000";
+  return fromEnv ?? "ws://localhost:8000/ws";
 }
 
 export class WsClient {
@@ -189,7 +193,7 @@ export class WsClient {
     this.setStatus(this.reconnectAttempts > 0 ? "reconnecting" : "connecting");
 
     const trimmedBase = this.wsBaseUrl.replace(/\/+$/, "");
-    const path = `${trimmedBase}/ws/${encodeURIComponent(this.roomCode)}`;
+    const path = `${trimmedBase}/${encodeURIComponent(this.roomCode)}`;
     const url = this.token ? `${path}?token=${encodeURIComponent(this.token)}` : path;
 
     let socket: WebSocket;
