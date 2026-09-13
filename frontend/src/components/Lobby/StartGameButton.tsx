@@ -1,13 +1,18 @@
 /**
  * Host-only "Start Game" affordance. Renders nothing for non-host
  * viewers. Disabled (with a tooltip explaining why) whenever the
- * current seated player count is outside the supported 2-8 range --
- * see backend/app/game/settings_schema.py's `player_count` bounds and
- * ARCHITECTURE.md's "host starts (requires 2-8 players present)".
+ * current seated human count is outside the supported range.
+ *
+ * Minimum is 1 (not 2): the backend auto-fills any gap between seated
+ * humans and `settings.player_count` with bots on START_GAME (see
+ * backend/app/api/websocket.py's bot auto-fill and
+ * backend/app/game/rules/bot_ai.py), so a lone host can start a game
+ * entirely against bots. See backend/app/game/settings_schema.py's
+ * `player_count` bounds (2-8) for the upper limit.
  */
 import styles from "./StartGameButton.module.css";
 
-export const MIN_PLAYERS = 2;
+export const MIN_PLAYERS = 1;
 export const MAX_PLAYERS = 8;
 
 export interface StartGameButtonProps {
