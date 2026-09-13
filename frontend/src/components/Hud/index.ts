@@ -22,3 +22,7 @@ export { BlackjackBetPanel } from "./BlackjackBetPanel";
 export type { BlackjackBetPanelProps, BlackjackBetStep } from "./BlackjackBetPanel";
 export { BlackjackToast } from "./BlackjackToast";
 export type { BlackjackToastProps, BlackjackToastItem } from "./BlackjackToast";
+export { OpponentPanel } from "./OpponentPanel";
+export type { OpponentPanelProps, OpponentInfo } from "./OpponentPanel";
+export { OpponentRail } from "./OpponentRail";
+export type { OpponentRailProps } from "./OpponentRail";
