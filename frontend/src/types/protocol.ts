@@ -490,6 +490,8 @@ export interface MaskedPlayerView {
   dev_card_count: number;
   hand: ResourceHand | null;
   dev_cards: DevCardHand | null;
+  /** Dev cards bought this turn, not yet playable. Same viewer-only masking as `dev_cards`. */
+  dev_cards_bought_this_turn: DevCardHand | null;
 }
 
 export interface WireVertexBuilding {
